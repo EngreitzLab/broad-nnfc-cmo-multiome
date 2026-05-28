@@ -1,0 +1,407 @@
+---
+title: "10X Multiome - 5 timepoints - CMO channel 1 QC"
+output: html_document
+---
+
+# 10X multiome 5 timepoints channel 1
+
+```{r}
+suppressPackageStartupMessages(library(Seurat))
+suppressPackageStartupMessages(library(here))
+suppressPackageStartupMessages(library(ggplot2))
+
+ec_diff_palette = c(
+  "#C6C7C7",
+  "#A8B1D6",
+  "#EBBC9E",
+  "#FBC1C3",
+  "#F7999C"
+)
+
+cmo_counts_path <- here(
+  "data",
+  "cmo_counts",
+  "channel1",
+  "counts_unfiltered"
+)
+```
+
+# Load assignments from Dulguun
+
+```{r}
+cmo_assignments_old <- read.delim(
+  here(
+    "data",
+    "barcode_mapping_multiome_dulguun.dedup.tsv"
+  ),
+  header = FALSE,
+  stringsAsFactors = FALSE
+)
+colnames(cmo_assignments_old) = c("barcode", "old_assignment") 
+
+# Keep only barcodes for channel 1 (-1_1)
+cmo_assignments_old_ch1 <-  cmo_assignments_old %>%
+  filter(grepl("-1_1$", barcode)) %>%
+  mutate(
+    barcode_new = sub("-1_1$", "", barcode)
+  )
+
+cmo_assignments_old_ch1$old_assignment_clean <- recode(
+  cmo_assignments_old_ch1$old_assignment,
+  "d0" = "d0_ipsc",
+  "d1" = "d1_ps",
+  "d2" = "d2_meso",
+  "d3" = "d3_ec",
+  "d4" = "d4_ec",
+  .default = cmo_assignments_old_ch1$old_assignment
+)
+
+head(cmo_assignments_old_ch1)
+```
+
+# Barplot old assignments
+
+```{r}
+plot_df_diff_old <- cmo_assignments_old_ch1 %>%
+  count(old_assignment_clean)
+
+ggplot(plot_df_diff_old, aes(x = old_assignment_clean, y = n, fill=old_assignment_clean)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(
+    title = "Classification of CMO Data - From Dulguun",
+    subtitle = "Filtered Singlets only",
+    x = "Differentiation stage",
+    y = "Number of Barcodes"
+    ) +
+  scale_fill_manual(values = ec_diff_palette)
+```
+
+# Load CMO counts into Seurat
+
+```{r}
+mat <- Matrix::readMM(file.path(cmo_counts_path, "cells_x_features.mtx"))
+barcodes <- readLines(file.path(cmo_counts_path, "cells_x_features.barcodes.txt"))
+genes <- readLines(file.path(cmo_counts_path, "cells_x_features.genes.txt"))
+gene_names <- readLines(file.path(cmo_counts_path, "cells_x_features.genes.names.txt"))
+
+# Seurat expects genes as rows and barcodes as columns, so we need to transpose the matrix
+counts <- t(mat)
+rownames(counts) <- genes
+colnames(counts) <- barcodes
+# Create Seurat object
+seu.cmo.raw <- CreateSeuratObject(
+  counts = counts,
+  assay = "CMO"
+)
+DefaultAssay(seu.cmo.raw) <- "CMO"
+
+# Create the metadata
+  cmo_ids <- paste0("CMO", sprintf("%02d", 1:25))
+  cmo_meta <- data.frame(
+    cmo_id = cmo_ids,
+    condition = rep(c("d0_ipsc", "d1_ps", "d2_meso", "d3_ec", "d4_ec"),each = 5),
+    replicate = rep(1:5, times = 5),
+    row.names = cmo_ids
+  )
+# Add the metadata to the object
+seu.cmo.raw[["CMO"]] <- AddMetaData(
+  object = seu.cmo.raw[["CMO"]],
+  metadata = cmo_meta[rownames(seu.cmo.raw[["CMO"]]), , drop = FALSE]
+)
+
+head(seu.cmo.raw)
+```
+
+```{r}
+# Merge the old assignments with the Seurat metadata
+meta <- seu.cmo.raw@meta.data
+
+meta$old_assignment <- cmo_assignments_old_ch1$old_assignment_clean[
+  match(rownames(meta), cmo_assignments_old_ch1$barcode_new)
+]
+
+meta$old_assignment[is.na(meta$old_assignment)] <- "Unassigned"
+
+seu.cmo.raw@meta.data <- meta
+
+seu.cmo.raw@meta.data$old_assignment %>%
+  table() %>%
+  prop.table()
+```
+
+# CMO classes to barcodes using Seurat::HTODemux
+
+Seurat::HTODemux will classify cells as "Singlet", "Doublet", or "Negative" based on the CMO counts. The positive.quantile parameter can be adjusted to set the threshold for calling a cell positive for a given CMO.
+
+```{r}
+library(here)
+flt_bc = read.delim(here("results/channel1/filtered_barcodes.txt"), header=FALSE)
+flt_bc
+```
+
+
+```{r warning=FALSE}
+# keep cells/barcodes with old assignment
+#cells_keep <- rownames(seu.cmo.raw@meta.data)[
+#  seu.cmo.raw@meta.data$old_assignment != "Unassigned"
+#]
+colnames(seu.cmo.raw) <- paste0(
+  colnames(seu.cmo.raw),
+  "_10x_5timepoints_channel1"
+)
+
+cells_keep <- intersect(flt_bc$V1, colnames(seu.cmo.raw))
+
+seu.cmo <- subset(
+  seu.cmo.raw,
+  cells = cells_keep
+)
+
+DefaultAssay(seu.cmo) <- "CMO"
+
+cmo_counts <- GetAssayData(seu.cmo, assay = "CMO", layer = "counts")
+
+cells_nonzero <- colnames(cmo_counts)[Matrix::colSums(cmo_counts) > 0]
+
+seu.cmo <- subset(
+  seu.cmo,
+  cells = cells_nonzero
+)
+
+seu.cmo <- NormalizeData(
+  seu.cmo,
+  assay = "CMO",
+  normalization.method = "CLR",
+  margin = 2
+)
+
+seu.cmo <- HTODemux(
+  seu.cmo,
+  assay = "CMO",
+  positive.quantile = 0.99
+)
+```
+```{r}
+hist(seu.cmo)
+```
+
+```{r}
+# Compute the fraction of Singlet, Doublet, and Negative classifications
+seu.cmo$CMO_classification.global %>%
+  table() %>%
+  prop.table()
+```
+
+```{r}
+seu.cmo@meta.data$hash.ID <- factor(
+  seu.cmo@meta.data$hash.ID,
+  levels = c(cmo_ids, "Doublet", "Negative")
+)
+
+seu.cmo$hash.ID %>%
+  table()
+```
+
+
+```{r}
+# Barplot of the classifications
+plot_df <-data.frame(
+  classification = names(table(seu.cmo$hash.ID)),
+  count = as.numeric(table(seu.cmo$hash.ID))
+)
+# Remove negative classifications
+plot_df <- plot_df %>%
+  filter(classification != "Negative" & classification != "Doublet")
+
+plot_df <- merge(
+  plot_df,
+  data.frame(classification = cmo_ids, differentiation = rep(c("d0_ipsc", "d1_ps", "d2_meso", "d3_ec", "d4_ec"), each = 5)),
+  by.x = "classification",
+  by.y = "classification",
+  all.x = TRUE
+)
+
+plot_df$classification <- factor(plot_df$classification, levels = c(cmo_ids, "Doublet"))
+
+ggplot(plot_df, aes(x = classification, y = count, fill=differentiation)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(
+    title = "HTODemux Classification of CMO Data",
+    subtitle = "Singlets only",
+    x = "CMO Hash ID",
+    y = "Number of Barcodes"
+    ) +
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  scale_fill_manual(values = ec_diff_palette)
+```
+
+
+```{r}
+# Total by differentiation stages
+plot_df_diff <- plot_df %>%
+  group_by(differentiation) %>%
+  summarise(count = sum(count))
+
+ggplot(plot_df_diff, aes(x = differentiation, y = count, fill=differentiation)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(
+    title = "HTODemux Classification of CMO Data",
+    subtitle = "Singlets only",
+    x = "Differentiation stage",
+    y = "Number of Barcodes"
+    ) +
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  scale_fill_manual(values = ec_diff_palette)
+```
+# Compare with old assignments
+
+```{r}
+compare_df <- seu.cmo@meta.data %>%
+  select(new_assignment = hash.ID, old_assignment = old_assignment)
+
+# Map CMO to differentiation stages
+compare_df <- compare_df %>%
+  left_join(
+    data.frame(
+      hash.ID = cmo_ids,
+      differentiation = rep(c("d0", "d1", "d2", "d3", "d4"), each = 5)
+    ),
+    by = c("new_assignment" = "hash.ID")
+  ) %>%
+  mutate(
+    match = old_assignment == differentiation,
+  )
+
+temp = as.data.frame(table("new" = compare_df$differentiation, "old" = compare_df$old_assignment, useNA = "ifany"))
+ggplot(temp, aes(x = old, y = new)) +
+  geom_tile(fill = NA) +
+  geom_text(aes(label = Freq)) +
+  theme_minimal() +
+  labs(x = "Old", y = "New")
+```
+
+```{r}
+write.table(seu.cmo@meta.data, file = here("data", "cmo_counts", "channel1", "cmo_assignments_metadata.tsv"), sep = "\t", quote = FALSE, row.names = TRUE)
+
+```
+
+```{r}
+FeatureScatter(seu.cmo, feature1 = "CMO18", feature2 = "CMO24")
+```
+
+```{r}
+Seurat::RidgePlot(seu.cmo, cols=c(rep(ec_diff_palette, each=5),"black"),group.by = "hash.ID",
+,features = c("CMO01"))
+```
+
+
+```{r}
+positive_quantiles <- c(0.90, 0.95, 0.975, 0.99, 0.995, 0.999)
+
+results <- lapply(positive_quantiles, function(q) {
+  obj <- subset(seu.cmo.raw, cells = cells_keep)
+  DefaultAssay(obj) <- "CMO"
+  
+  obj <- NormalizeData(
+    obj,
+    assay = "CMO",
+    normalization.method = "CLR",
+    margin = 2,
+    verbose = FALSE
+  )
+  
+  obj <- HTODemux(
+    obj,
+    assay = "CMO",
+    positive.quantile = q,
+    verbose = FALSE
+  )
+  
+  pred_condition <- cmo_meta[obj$hash.ID, "condition"]
+  
+  old <- obj$old_assignment
+  
+  keep <- !is.na(pred_condition) & old != "Unassigned"
+  
+  data.frame(
+    positive.quantile = q,
+    n_cells = length(old),
+    n_compared = sum(keep),
+    agreement = mean(pred_condition[keep] == old[keep]),
+    singlets = sum(obj$CMO_classification.global == "Singlet"),
+    doublets = sum(obj$CMO_classification.global == "Doublet"),
+    negatives = sum(obj$CMO_classification.global == "Negative")
+  )
+})
+
+results_df <- bind_rows(results)
+results_df
+```
+
+```{r}
+results_df %>%
+  arrange(desc(agreement), desc(singlets))
+```
+
+```{r}
+best_q <- results_df$positive.quantile[which.max(results_df$agreement)]
+best_q
+```
+
+```{r}
+obj <- subset(seu.cmo.raw, cells = cells_keep)
+DefaultAssay(obj) <- "CMO"
+
+obj <- NormalizeData(obj, assay = "CMO", normalization.method = "CLR", margin = 2)
+obj <- HTODemux(obj, assay = "CMO", positive.quantile = best_q)
+
+obj$pred_condition <- cmo_meta[obj$hash.ID, "condition"]
+
+table(
+  old = obj$old_assignment,
+  new = obj$pred_condition,
+  useNA = "ifany"
+)
+```
+
+```{r}
+cmo_mat <- GetAssayData(seu.cmo, assay = "CMO", layer = "counts")
+
+top_call <- apply(cmo_mat, 2, function(x) {
+  names(which.max(x))
+})
+
+seu.cmo$CMO_argmax <- top_call
+```
+
+```{r}
+seu.cmo$CMO_argmax %>%
+  table()
+```
+
+```{r}
+seu.cmo$CMO_simple <- apply(cmo_mat, 2, function(x) {
+  names(which.max(x))
+})
+```
+
+```{r}
+seu.cmo$timepoint <- sub("_.*", "", cmo_meta[seu.cmo$hash.ID, "condition"])
+seu.cmo$timepoint_argmax <- sub("_.*", "", cmo_meta[seu.cmo$CMO_simple, "condition"])
+table(
+  old = seu.cmo$old_assignment,
+  new = seu.cmo$timepoint_argmax
+)
+```
+
+```{r}
+seu.cmo@meta.data[seu.cmo$old_assignment=="d2" & seu.cmo$timepoint_argmax=="d3",]
+```
+
+```{r}
+barplot(seu.cmo[["CMO"]]$counts[,"AAGAATCAGCTATATG"])
+```
+
