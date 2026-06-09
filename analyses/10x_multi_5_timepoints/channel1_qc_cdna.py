@@ -48,7 +48,7 @@ def _():
 @app.cell
 def _(pd):
     old_adata_cmo_assignments = pd.read_csv(
-        "/Users/emattei/GitHub/broad-nnfc-cmo-multiome/data/barcode_mapping_multiome_dulguun.dedup.tsv",
+        "../../data/10x_multi_5_timepoints_original_barcode_cmo_assignments_from_dulguun.dedup.tsv",
         sep="\t",
         header=None,
         names=["barcode", "annotation"]
@@ -82,45 +82,7 @@ def _(pd):
 
 @app.cell
 def _(pd):
-    # I am not using this anymore but I want to keep it here for reference
-
-    # Load cmo assignment
-    cmo_assignment_path = "../data/cmo_counts/channel1/cmo_assignments_metadata.tsv"
-
-    cmo_assignment_df = pd.read_csv(
-        cmo_assignment_path,
-        sep="\t",
-        header=0,
-        index_col=0
-    )
-
-    cmo_assignment_df["cell_barcode"] = (
-        cmo_assignment_df.index.astype(str)
-        .str.replace(r"-1$", "", regex=True)
-        + "_10x_5timepoints_channel1"
-    )
-
-    cmo_assignment_df.index = cmo_assignment_df["cell_barcode"]
-
-    cmo_assignment_df = cmo_assignment_df.drop(
-        columns=["orig.ident"],
-        errors="ignore"
-    )
-
-    cmo_assignment_df = cmo_assignment_df.rename(
-        columns={
-            "CMO_classification.global": "cmo_classification_global",
-            "CMO_classification": "cmo_classification",
-            "hash.ID": "hash_ID",
-        }
-    )
-    cmo_assignment_df
-    return
-
-
-@app.cell
-def _(pd):
-    gene_metadata_path = "../annotations/gencode.v43.protein_coding.TSS500bp.bed"
+    gene_metadata_path = "../../annotations/gencode.v43.protein_coding.TSS500bp.bed"
     gene_metadata_df = pd.read_csv(
         gene_metadata_path,
         sep="\t",
@@ -133,7 +95,7 @@ def _(pd):
 
 @app.cell
 def _(ad, gene_metadata_df, old_assignments_df, sc):
-    h5ad_path = "../data/h5ad/10x_5timepoints_channel1.h5ad"
+    h5ad_path = "../../data/h5ad/10x_5timepoints_channel1.h5ad"
     adata = ad.read_h5ad(h5ad_path)
 
     # -------------------------
@@ -156,19 +118,6 @@ def _(ad, gene_metadata_df, old_assignments_df, sc):
     adata.var.index = original_var_names
     adata.var.index.name = None
 
-    # -------------------------
-    # Add adata_cmo metadata to obs
-    # -------------------------
-    # adata.obs = (
-    #     adata.obs
-    #     .merge(
-    #         cmo_assignment_df[["cmo_classification", "hash_ID", "cmo_classification_global"]],
-    #         left_index=True,
-    #         right_index=True,
-    #         how="left"
-    #     )
-    # )
-
     adata.obs = adata.obs.merge(
         old_assignments_df,
         left_index=True,
@@ -176,10 +125,6 @@ def _(ad, gene_metadata_df, old_assignments_df, sc):
         how="left"
     )
     adata.obs["old_annotation"] = adata.obs["old_annotation"].fillna("Unassigned")
-
-    #adata.obs["hash_ID"] = adata.obs["hash_ID"].fillna("Negative")
-    #adata.obs["cmo_classification_global"] = adata.obs["cmo_classification_global"].fillna("Negative")
-    #adata.obs["cmo_classification"] = adata.obs["cmo_classification"].fillna("Negative")
 
     # -------------------------
     # QC gene flags
@@ -229,7 +174,8 @@ def _(adata, np, plt):
 
     # Plot knee plot for n_genes_by_counts
     # total counts per cell
-    counts = adata.obs.loc[adata.obs["old_annotation"] != "Unassigned", "total_counts"].values
+    #counts = adata.obs.loc[adata.obs["old_annotation"] != "Unassigned", "total_counts"].values
+    counts = adata.obs.loc[:, "total_counts"].values
 
     # sort descending
     counts_sorted = np.sort(counts)[::-1]
@@ -259,7 +205,7 @@ def _(adata, sc):
 def _(adata, sc):
     # Compute quantile total counts
     #total_counts_95th_percentile = adata.obs["total_counts"].quantile(0.95)
-    sc.pp.filter_cells(adata, min_counts=1000)
+    sc.pp.filter_cells(adata, min_counts=500)
     sc.pp.filter_cells(adata, max_counts=5000)
     sc.pp.filter_cells(adata, min_genes=500)
     sc.pp.filter_genes(adata, min_cells=3)
@@ -280,7 +226,7 @@ def _(adata, plt, sc):
     ax.axhline(y=10, color="red", linestyle="--")
 
     # vertical line (e.g. UMI cutoff)
-    ax.axvline(x=1000, color="blue", linestyle="--")
+    ax.axvline(x=500, color="blue", linestyle="--")
 
     plt.show()
     return
@@ -365,8 +311,8 @@ def _(adata):
 def _(adata, sc):
     sc.pl.pca(
         adata,
-        color=["old_annotation", "hash_ID", "pct_counts_mt", "pct_counts_mt"],
-        dimensions=[(0, 1), (0, 1), (0, 1), (0, 1)],
+        color=["old_annotation", "pct_counts_mt", "pct_counts_mt"],
+        dimensions=[(0, 1), (0, 1), (0, 1)],
         ncols=2,
         size=2,
     )
@@ -499,7 +445,7 @@ def _(adata, raw, sc):
 
 @app.cell
 def _(adata, pd):
-    pd.crosstab(adata.obs["leiden"], adata.obs["doublet_score"] < 0.35)
+    pd.crosstab(adata.obs["leiden"], adata.obs["doublet_score"] < 0.15)
     return
 
 
@@ -516,7 +462,7 @@ def _(mo):
 
 @app.cell
 def _(Path, mmread):
-    cmo_counts_path = Path("../data/cmo_counts/channel1/counts_unfiltered")
+    cmo_counts_path = Path("../../data/cmo_counts/channel1/counts_unfiltered")
 
     mat = mmread(cmo_counts_path / "cells_x_features.mtx").tocsr()
 
@@ -531,7 +477,7 @@ def _(Path, mmread):
 
 @app.cell
 def _(Path, adata):
-    Path("../results/channel1/filtered_barcodes.txt").write_text("\n".join(adata.obs_names[adata.obs["doublet_score"] < 0.15].to_list()))
+    Path("../../results/channel1/filtered_barcodes.txt").write_text("\n".join(adata.obs_names[adata.obs["doublet_score"] < 0.15].to_list()))
     return
 
 
@@ -550,7 +496,7 @@ def _(ad, adata, barcodes, gene_names, genes, mat, pd):
     adata_cmo = adata_cmo[cells_in_use, :]
     adata_flt = adata[cells_in_use, :]
     adata_cmo
-    return adata_cmo, adata_flt, cells_in_use
+    return adata_cmo, adata_flt
 
 
 @app.cell
@@ -621,6 +567,7 @@ def _(adata_cmo, adata_flt, clr, n_pos, np, pd, positive):
     }
 
     adata_flt.obs["timepoint_scanpy"] = adata_flt.obs["cmo_positive_tags_scanpy"].map(cmo_to_timepoint)
+
     adata_flt.obs["timepoint_scanpy"] = adata_flt.obs["timepoint_scanpy"].fillna(
         adata_flt.obs["cmo_classification_global_scanpy"]
     )
@@ -629,15 +576,11 @@ def _(adata_cmo, adata_flt, clr, n_pos, np, pd, positive):
         adata_flt.obs["cmo_classification_global_scanpy"],
         adata_flt.obs["cmo_positive_tags_scanpy"]
     )
-    return (cmo_to_timepoint,)
+    return
 
 
 @app.cell
-def _(adata_flt, cmo_to_timepoint, pd):
-    adata_flt.obs["timepoint_scanpy"] = adata_flt.obs["cmo_positive_tags_scanpy"].map(cmo_to_timepoint)
-    adata_flt.obs["timepoint_scanpy"] = adata_flt.obs["timepoint_scanpy"].fillna(
-        adata_flt.obs["cmo_classification_global_scanpy"]
-    )
+def _(adata_flt, pd):
     adata_flt.obs["timepoint_scanpy"] = pd.Categorical(
         adata_flt.obs["timepoint_scanpy"],
         categories=["d0", "d1", "d2", "d3", "d4", "Doublet", "Negative"],
@@ -683,6 +626,19 @@ def _(adata_flt):
 
 @app.cell
 def _(adata_flt):
+    assigned_cells = adata_flt.obs_names[(adata_flt.obs["timepoint_scanpy"] != "Doublet") & (adata_flt.obs["timepoint_scanpy"] != "Negative")]
+    assigned_cells
+    return (assigned_cells,)
+
+
+@app.cell
+def _(adata_flt):
+    adata_flt.obs["timepoint_scanpy"].value_counts()
+    return
+
+
+@app.cell
+def _(adata_flt):
     adata_flt.obs["old_annotation"].value_counts()
     return
 
@@ -712,24 +668,24 @@ def _():
 
 @app.cell
 def _(pd):
-    chrom_dict = pd.read_csv("../annotations/GRCh38_EBV.chrom.sizes.no.alt.tsv", sep="\t", header=None, names=["chr", "size"])
+    chrom_dict = pd.read_csv("../../annotations/GRCh38_EBV.chrom.sizes.no.alt.tsv", sep="\t", header=None, names=["chr", "size"])
     chrom_dict = chrom_dict.set_index("chr")["size"].to_dict()
     list(chrom_dict.items())[1:5]
     return (chrom_dict,)
 
 
 @app.cell
-def _(cells_in_use, chrom_dict, snap):
+def _(assigned_cells, chrom_dict, snap):
     atac_adata = snap.pp.import_fragments(
-        "../data/fragments/10x_5timepoints_channel1.fragments.tsv.gz",
+        "../../data/fragments/10x_5timepoints_channel1.fragments.tsv.gz",
         sorted_by_barcode=False,
         chrom_sizes=chrom_dict,
-        whitelist=cells_in_use,
+        whitelist=assigned_cells,
         min_num_fragments=1000,
     )
     #mask = atac_adata.obs_names.isin(cells_in_use)
     #atac_adata = atac_adata[mask, :].copy()
-    snap.metrics.tsse(atac_adata, "../annotations/gencode.v43.primary_assembly.annotation.gtf.gz")
+    snap.metrics.tsse(atac_adata, "../../annotations/gencode.v43.primary_assembly.annotation.gtf.gz")
     atac_adata
     return (atac_adata,)
 
@@ -808,8 +764,21 @@ def _(alt, df, min_frag, min_tsse, mo):
 
 
 @app.cell
+def _(adata_flt, atac_adata):
+    atac_adata.obs["timepoint_scanpy"] = adata_flt.obs.loc[atac_adata.obs_names, "timepoint_scanpy"].astype("category")
+
+    return
+
+
+@app.cell
+def _(atac_adata):
+    atac_adata.obs["timepoint_scanpy"].value_counts()
+    return
+
+
+@app.cell
 def _(atac_adata, snap):
-    snap.pp.filter_cells(atac_adata, min_counts=1000, min_tsse=10, max_counts=20_000)
+    snap.pp.filter_cells(atac_adata, min_counts=1000, min_tsse=5, max_counts=20_000)
     return
 
 
@@ -841,14 +810,6 @@ def _(atac_adata, snap):
 
 
 @app.cell
-def _(adata_flt, atac_adata, cells_in_use):
-    common_cells = atac_adata.obs_names.intersection(cells_in_use)
-
-    atac_adata.obs["timepoint_scanpy"] = adata_flt.obs.loc[common_cells, "timepoint_scanpy"].astype("category")
-    return
-
-
-@app.cell
 def _(atac_adata):
     timepoint_palette = {
         "d0": "#C6C7C7",
@@ -871,6 +832,12 @@ def _(atac_adata):
 @app.cell
 def _(atac_adata):
     print(atac_adata.obs["timepoint_scanpy"].cat.categories.tolist())
+    return
+
+
+@app.cell
+def _(atac_adata, pd):
+    pd.crosstab(atac_adata.obs["leiden"], atac_adata.obs["timepoint_scanpy"])
     return
 
 
