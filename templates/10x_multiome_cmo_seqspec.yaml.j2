@@ -1,0 +1,138 @@
+!Assay
+seqspec_version: 0.3.1
+assay_id: {{ assay_id }}
+name: 10x Multiome CMO (MULTI-seq)
+doi: "None"
+date: "23 June 2026"
+description: cell multiplexing oligo sequencing (MULTI-seq) using 10x Chromium Multiome ATAC + Gene Expression
+modalities:
+ - tag
+lib_struct: {{ library_structure }}
+library_protocol: {{ library_protocol }}
+library_kit: {{ library_kit }}
+sequence_protocol: {{ sequencing_protocol }}
+sequence_kit: {{ sequencing_kit }}
+
+sequence_spec:
+- !Read
+  read_id: {{ read1_id }}
+  name: {{ read1_name }}
+  modality: tag
+  primer_id: tag-truseq_read1
+  min_len: 28
+  max_len: 28
+  strand: pos
+  files:
+{% if read1_files is defined and read1_files %}
+{% for f in read1_files %}
+  - !File
+    file_id: {{ f.file_id }}
+    filename: {{ f.filename }}
+    filetype: {{ f.filetype | default('fastq') }}
+    filesize: {{ f.filesize }}
+    url: {{ f.url }}
+    urltype: {{ f.urltype }}
+    md5: {{ f.md5 }}
+{% endfor %}
+{% endif %}
+- !Read
+  read_id: {{ read2_id }}
+  name: {{ read2_name }}
+  modality: tag
+  primer_id: tag-truseq_read2
+  min_len: 8
+  max_len: 90
+  strand: neg
+  files:
+{% if read2_files is defined and read2_files %}
+{% for f in read2_files %}
+  - !File
+    file_id: {{ f.file_id }}
+    filename: {{ f.filename }}
+    filetype: {{ f.filetype | default('fastq') }}
+    filesize: {{ f.filesize }}
+    url: {{ f.url }}
+    urltype: {{ f.urltype }}
+    md5: {{ f.md5 }}
+{% endfor %}
+{% endif %}
+library_spec:
+- !Region
+  region_id: tag
+  region_type: tag
+  name: tag
+  sequence_type: joined
+  sequence: ACACTCTTTCCCTACACGACGCTCTTCCGATCTNNNNNNNNNNNNNNNNXXXXXXXXXXXXNNNNNNNNAGATCGGAAGAGCACACGTCTGAACTCCAGTCAC
+  min_len: 103
+  max_len: 103
+  onlist: null
+  regions:
+  - !Region
+    region_id: tag-truseq_read1
+    region_type: truseq_read1
+    name: tag-truseq_read1
+    sequence_type: fixed
+    sequence: ACACTCTTTCCCTACACGACGCTCTTCCGATCT
+    min_len: 33
+    max_len: 33
+    onlist: null
+    regions: null
+    parent_id: tag
+  - !Region
+    region_id: tag-cell_barcode
+    region_type: barcode
+    name: tag-cell_barcode
+    sequence_type: onlist
+    sequence: NNNNNNNNNNNNNNNN
+    min_len: 16
+    max_len: 16
+    onlist: !Onlist
+      file_id: {{ cell_barcode_file_id }}
+      filename: {{ cell_barcode_file_name }}
+      filetype: {{ cell_barcode_file_type }}
+      filesize: {{ cell_barcode_file_size }}
+      url: {{ cell_barcode_file_url }}
+      urltype: {{ cell_barcode_file_urltype }}
+      md5: {{ cell_barcode_file_md5 }}
+    regions: null
+    parent_id: tag
+  - !Region
+    region_id: tag-umi
+    region_type: umi
+    name: tag-umi
+    sequence_type: random
+    sequence: XXXXXXXXXXXX
+    min_len: 12
+    max_len: 12
+    onlist: null
+    regions: null
+    parent_id: tag
+  - !Region
+    region_id: cmo_barcode
+    region_type: barcode
+    name: MULTI-seq CMO barcode
+    sequence_type: onlist
+    sequence: NNNNNNNN
+    min_len: 8
+    max_len: 8
+    onlist: !Onlist
+      file_id: {{ cmo_barcode_file_id }}
+      filename: {{ cmo_barcode_file_name }}
+      filetype: {{ cmo_barcode_file_type }}
+      filesize: {{ cmo_barcode_file_size }}
+      url: {{ cmo_barcode_file_url }}
+      urltype: {{ cmo_barcode_file_urltype }}
+      md5: {{ cmo_barcode_file_md5 }}
+    regions: null
+    parent_id: tag
+  - !Region
+    region_id: tag-truseq_read2
+    region_type: truseq_read2
+    name: tag-truseq_read2
+    sequence_type: fixed
+    sequence: AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC
+    min_len: 34
+    max_len: 34
+    onlist: null
+    regions: null
+    parent_id: tag

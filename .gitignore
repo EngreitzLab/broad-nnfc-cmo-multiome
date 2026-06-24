@@ -184,6 +184,8 @@ cython_debug/
 /documents/
 /data/
 /annotations/
+/seqspecs/
+/seqspec_vars/
 
 # Local editor and OS state
 .DS_Store
