@@ -7,13 +7,13 @@
 #     "python-dotenv==1.2.2",
 #     "pyyaml==6.0.3",
 #     "requests==2.34.2",
-#     "seqspec==0.3.1",
+#     "seqspec==0.3.0",
 # ]
 # ///
 
 import marimo
 
-__generated_with = "0.23.10"
+__generated_with = "0.23.11"
 app = marimo.App(
     css_file="/usr/local/_marimo/custom.css",
     auto_download=["html"],
@@ -36,25 +36,37 @@ def _():
     import json
     import os
     from pathlib import Path
-    from dotenv import load_dotenv
+    from dotenv import find_dotenv, load_dotenv
     from igvf_utils.connection import Connection
 
-    return Connection, Path, gzip, hashlib, io, json, load_dotenv, os
+    return (
+        Connection,
+        Path,
+        find_dotenv,
+        gzip,
+        hashlib,
+        io,
+        json,
+        load_dotenv,
+        os,
+    )
 
 
 @app.cell
-def _(Connection, load_dotenv, require_env):
-    # This notebook expect a .env file in the repository root folder with the igvf credentials
+def _(Connection, Path, find_dotenv, load_dotenv, require_env):
+    # This notebook expects a .env file in the repository root folder with the igvf credentials
     #IGVF_API_KEY=
     #IGVF_SECRET_KEY=
-    load_dotenv(dotenv_path=".env", override=True)
+    _env_path = find_dotenv(usecwd=True)
+    project_root = Path(_env_path).parent
+    load_dotenv(dotenv_path=_env_path, override=True)
     require_env("IGVF_API_KEY")
     require_env("IGVF_SECRET_KEY")
     # Connecting to the IGVF portal
     domain = "api.data.igvf.org"
     api_base = f"https://{domain}"
     conn = Connection(domain)
-    return (conn,)
+    return conn, project_root
 
 
 @app.cell
@@ -199,11 +211,18 @@ def _(conn, fastq_metadata):
 
 
 @app.cell
-def _(Path, conn, fastq_metadata, gzip, input_file_sets_by_channel, io):
+def _(
+    conn,
+    fastq_metadata,
+    gzip,
+    input_file_sets_by_channel,
+    io,
+    project_root,
+):
     from jinja2 import Environment, FileSystemLoader
     from collections import defaultdict as _defaultdict
 
-    _TEMPLATE_DIR = Path("templates")
+    _TEMPLATE_DIR = project_root / "templates"
     _jinja_env = Environment(loader=FileSystemLoader(str(_TEMPLATE_DIR)), keep_trailing_newline=True)
 
     TEMPLATE_BY_ASSAY = {
@@ -275,7 +294,7 @@ def _(Path, conn, fastq_metadata, gzip, input_file_sets_by_channel, io):
     print(f"ATAC barcode: {_atac_bc_ctx['cell_barcode_file_id']}")
     print(f"CMO barcode: {_cmo_bc_ctx['cmo_barcode_file_id']}")
 
-    _seqspec_dir = Path("seqspecs")
+    _seqspec_dir = project_root / "seqspecs"
     _seqspec_dir.mkdir(exist_ok=True)
 
     seqspec_paths = {}
@@ -378,8 +397,8 @@ def _(os):
 
 
 @app.cell
-def _(Path, hashlib, json, seqspec_paths):
-    SEQSPEC_DIR = Path("seqspecs")
+def _(hashlib, json, project_root, seqspec_paths):
+    SEQSPEC_DIR = project_root / "seqspecs"
 
     def _config_alias(file_set_alias, group_suffix):
         _base = file_set_alias
