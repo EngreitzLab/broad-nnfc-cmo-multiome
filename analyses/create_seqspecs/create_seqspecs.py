@@ -223,7 +223,7 @@ def _(
     from collections import defaultdict as _defaultdict
 
     _TEMPLATE_DIR = project_root / "templates"
-    _jinja_env = Environment(loader=FileSystemLoader(str(_TEMPLATE_DIR)), keep_trailing_newline=True)
+    _jinja_env = Environment(loader=FileSystemLoader(str(_TEMPLATE_DIR)), keep_trailing_newline=True, trim_blocks=True, lstrip_blocks=True)
 
     TEMPLATE_BY_ASSAY = {
         "single-nucleus RNA sequencing assay": "10x_multiome_gex_seqspec.yaml.j2",
@@ -331,8 +331,10 @@ def _(
                 "library_kit":         LIB_KIT,
                 "sequencing_protocol": _info["sequencing_protocol"],
                 "sequencing_kit":      _info["sequencing_kit"],
-                "read1_id":   "R1", "read1_name": "Read 1",
-                "read2_id":   "R2", "read2_name": "Read 2",
+                "read1_id":   (_by_read.get("R1") or [{}])[0].get("file_id", "R1"),
+                "read1_name": "Read 1",
+                "read2_id":   (_by_read.get("R2") or [{}])[0].get("file_id", "R2"),
+                "read2_name": "Read 2",
                 "read1_files": _by_read.get("R1", []),
                 "read2_files": _by_read.get("R2", []),
             }
@@ -345,8 +347,10 @@ def _(
                 _ctx["assay_id"] = f"{_channel}_atac_{_set_acc}_{_sfx}"
                 _ctx.update(_atac_bc_ctx)
                 _ctx.update({
-                    "read3_id": "R3", "read3_name": "Read 3",
-                    "read_i1_id": "I1", "read_i1_name": "Index 1",
+                    "read3_id":   (_by_read.get("R3") or [{}])[0].get("file_id", "R3"),
+                    "read3_name": "Read 3",
+                    "read_i1_id":   (_by_read.get("I1") or [{}])[0].get("file_id", "I1"),
+                    "read_i1_name": "Index 1",
                     "read3_files":   _by_read.get("R3", []),
                     "read_i1_files": _by_read.get("I1", []),
                 })
