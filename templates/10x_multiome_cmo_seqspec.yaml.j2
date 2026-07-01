@@ -39,8 +39,8 @@ sequence_spec:
   name: {{ read2_name }}
   modality: tag
   primer_id: tag-truseq_read2
-  min_len: 8
-  max_len: 90
+  min_len: 44
+  max_len: 44
   strand: neg
   files:
 {% if read2_files is defined and read2_files %}
@@ -61,9 +61,9 @@ library_spec:
   region_type: tag
   name: tag
   sequence_type: joined
-  sequence: ACACTCTTTCCCTACACGACGCTCTTCCGATCTNNNNNNNNNNNNNNNNXXXXXXXXXXXXNNNNNNNNAGATCGGAAGAGCACACGTCTGAACTCCAGTCAC
-  min_len: 103
-  max_len: 103
+  sequence: ACACTCTTTCCCTACACGACGCTCTTCCGATCTNNNNNNNNNNNNNNNNXXXXXXXXXXXXNNNNNNNNNNNNNNNNAGATCGGAAGAGCACACGTCTGAACTCCAGTCAC
+  min_len: 110
+  max_len: 110
   onlist: null
   regions:
   - !Region
@@ -111,9 +111,9 @@ library_spec:
     region_type: barcode
     name: MULTI-seq CMO barcode
     sequence_type: onlist
-    sequence: NNNNNNNN
-    min_len: 8
-    max_len: 8
+    sequence: NNNNNNNNNNNNNNN
+    min_len: 15
+    max_len: 15
     onlist: !Onlist
       file_id: {{ cmo_barcode_file_id }}
       filename: {{ cmo_barcode_file_name }}

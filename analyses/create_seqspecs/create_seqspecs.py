@@ -13,7 +13,7 @@
 
 import marimo
 
-__generated_with = "0.23.11"
+__generated_with = "0.23.13"
 app = marimo.App(
     css_file="/usr/local/_marimo/custom.css",
     auto_download=["html"],
@@ -79,6 +79,10 @@ def _():
         "IGVFDS5477BPOI",
         "IGVFDS3995WHFT"
     ]
+    #i5 accession
+    #IGVFFI2735BTOF
+    #i7 accession
+    #IGVFFI3285JGBN
     return (intermediate_analysis_sets,)
 
 
@@ -276,6 +280,7 @@ def _(
 
     _gex_bc_ctx  = _tabular_ctx("igvf:10X_Multiome_GEX_cell_barcode_inclusion_list", "cell_barcode")
     _atac_bc_ctx = _tabular_ctx("igvf:10X_Multiome_ATAC_cell_barcode_inclusion_list", "cell_barcode")
+    _atac_i7_ctx = _tabular_ctx("IGVFFI3285JGBN", "i7")
 
     _cmo_bc_acc = None
     for _bc_ch, _bc_fsets in input_file_sets_by_channel.items():
@@ -346,6 +351,7 @@ def _(
             elif _assay == "single-nucleus ATAC-seq":
                 _ctx["assay_id"] = f"{_channel}_atac_{_set_acc}_{_sfx}"
                 _ctx.update(_atac_bc_ctx)
+                _ctx.update(_atac_i7_ctx)
                 _ctx.update({
                     "read3_id":   (_by_read.get("R3") or [{}])[0].get("file_id", "R3"),
                     "read3_name": "Read 3",

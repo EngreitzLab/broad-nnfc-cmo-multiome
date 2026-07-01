@@ -38,7 +38,7 @@ sequence_spec:
   read_id: {{ read2_id }}
   name: {{ read2_name }}
   modality: atac
-  primer_id: atac-nextera_read1
+  primer_id: atac-linker
   min_len: 16
   max_len: 16
   strand: neg
@@ -103,7 +103,7 @@ library_spec:
   region_type: atac
   name: atac
   sequence_type: joined
-  sequence: AATGATACGGCGACCACCGAGATCTACACNNNNNNNNNNNNNNNNCGCGTCTGTCGTCGGCAGCGTCAGATGTGTATAAGAGACAGXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXCTGTCTCTTATACACATCTCCGAGCCCACGAGACXXXXXXXXATCTCGTATGCCGTCTTCTGCTTG
+  sequence: AATGATACGGCGACCACCGAGATCTACACNNNNNNNNNNNNNNNNCGCGTCTGTCGTCGGCAGCGTCAGATGTGTATAAGAGACAGXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXCTGTCTCTTATACACATCTCCGAGCCCACGAGACNNNNNNNNATCTCGTATGCCGTCTTCTGCTTG
   min_len: 153
   max_len: 652
   onlist: null
@@ -185,11 +185,18 @@ library_spec:
     region_id: atac-sample_index_i7
     region_type: index7
     name: atac-sample_index_i7
-    sequence_type: random
-    sequence: XXXXXXXX
+    sequence_type: onlist
+    sequence: NNNNNNNN
     min_len: 8
     max_len: 8
-    onlist: null
+    onlist: !Onlist
+      file_id: {{ i7_file_id }}
+      filename: {{ i7_file_name }}
+      filetype: {{ i7_file_type }}
+      filesize: {{ i7_file_size }}
+      url: {{ i7_file_url }}
+      urltype: {{ i7_file_urltype }}
+      md5: {{ i7_file_md5 }}
     regions: null
     parent_id: atac
   - !Region
