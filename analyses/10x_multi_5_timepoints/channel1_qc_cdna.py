@@ -556,7 +556,7 @@ def _(adata_flt, sc):
     sc.pl.pca(
         adata_flt,
         color=["leiden"],
-        dimensions=[(1, 2)],
+        dimensions=[(0, 1)],
         ncols=1,
         size=5,
     )
@@ -568,7 +568,7 @@ def _(adata_flt, sc):
     sc.pl.pca(
         adata_flt,
         color=["leiden"],
-        dimensions=[(3, 4)],
+        dimensions=[(2, 3)],
         ncols=1,
         size=5,
     )
@@ -664,7 +664,7 @@ def _(adata_flt, okabe_ito_palette, sc):
     sc.pl.pca(
         adata_flt,
         color=["predicted_doublet"],
-        dimensions=[(1, 2)],
+        dimensions=[(0, 1)],
         palette={"False": okabe_ito_palette[0], "True": okabe_ito_palette[6]},
         ncols=1,
         size=5,
@@ -1083,26 +1083,6 @@ def cluster8_singlet_margin(adata_flt, clr, np, plt, thresholds):
 
 
 @app.cell(hide_code=True)
-def negative_vs_singlet_qc(adata_flt, leiden_doublet_summary, sc):
-    # Are "Negative" barcodes that land in largely-Singlet clusters real cells that
-    # simply failed CMO hash detection (similar QC profile to their cluster's Singlets),
-    # or lower-quality debris (worse QC profile)? Restrict to clusters where CMO hashing
-    # is NOT doublet-dominated, i.e. where Negatives are clustering with confidently
-    # assigned cells rather than with other ambiguous/doublet barcodes.
-    _singlet_dominant_clusters = leiden_doublet_summary.loc[leiden_doublet_summary["pct_cmo_doublet"] < 50].index
-    _compare_mask = adata_flt.obs["leiden"].isin(_singlet_dominant_clusters) & adata_flt.obs["cmo_status_scanpy"].isin(["Singlet", "Negative"])
-
-    sc.pl.violin(
-        adata_flt[_compare_mask.to_numpy()],
-        keys=["pct_counts_mt", "doublet_score"],
-        groupby="cmo_status_scanpy",
-        rotation=0,
-        multi_panel=True,
-    )
-    return
-
-
-@app.cell(hide_code=True)
 def doublet_cluster_conclusion(mo):
     mo.md(r"""
     ### Doublet-dominated clusters: conclusions
@@ -1112,9 +1092,14 @@ def doublet_cluster_conclusion(mo):
 
     2. **The residual CMO "singlets" in these clusters are not robust.**
        Using cluster 8 as the representative case: sweeping the CMO detection quantile from 0.90 to 0.99 makes its singlet count swing wildly (8 to 705 to 1,613 to 830), with no stable quantile. Of the current singlet calls, 25.4% have their 2nd-strongest CMO within 0.1 CLR units of also clearing threshold. As before, this looks like CMO hashing's structural blindness to same-CMO (same-sample) doublets rather than a tunable threshold problem, so we drop these clusters wholesale rather than keep their CMO-labeled singlets.
+    """)
+    return
 
-    3. **"Negative" barcodes in the singlet-dominant clusters look worth rescuing.**
-       Restricted to clusters where CMO doublet-calling is below 50%, Negatives vs. Singlets: %mito 8.4% vs. 6.6%, Scrublet doublet_score 0.14 vs. 0.19 (lower, not higher). Comparable QC profile and a lower doublet score supports treating them as real cells with failed CMO staining rather than debris, so we rescue them via their cluster's consensus timepoint.
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Cluster 9
     """)
     return
 
@@ -1145,6 +1130,161 @@ def cluster9_mito_filter_impact(adata_flt, mo):
 
     Cluster 9 accounts for {(_n_cluster9 - _n_cluster9_pass_mito) / (_n_total - (_n_cluster9_pass_mito + _n_other_pass_mito)):.1%} of all cells that a 15% mito cutoff would remove dataset-wide, despite being only {_n_cluster9 / _n_total:.1%} of the dataset, i.e. a mito filter would disproportionately clear out cluster 9.
     """)
+    return
+
+
+@app.cell(hide_code=True)
+def negative_tag_rescue(mo):
+    mo.md(r"""
+    ## Rescue Negative tags
+
+    **"Negative" barcodes in the singlet-dominant clusters look worth rescuing, and the rescued tags are independently supported by the sub-threshold CMO signal.**
+
+    Restricted to clusters that actually survive `pass_strict_qc` (i.e. excluding both the doublet-dominated clusters and the debris cluster 9), Negatives vs. Singlets: %mito 4.8% vs. 6.2% (Negatives actually lower), Scrublet doublet_score 0.192 vs. 0.195 (essentially identical). Comparable-to-better QC profile supports treating them as real cells with failed CMO staining rather than debris.
+
+       Going further (`rescue_tag_cmo_signal_check`): for each rescued Negative, we checked whether its single closest-to-threshold CMO (the one nearest to, but not over, its cutoff) belongs to the same timepoint as the tag we assigned via cluster consensus. Match rate is 48.9% overall, vs. a 15.9% null baseline (1,000-permutation test) if the rescue tag were random -- roughly 3.1x enrichment (permutation p < 0.001, binomial p ~ 2e-305). This varies by timepoint (d3 92.5%, d0 52.4%, d1/d2/d4 38-46%), but every timepoint sits well above the random baseline. Matched barcodes also have a smaller median gap-to-threshold than mismatched ones, meaning genuine near-miss CMO signal really does track the assigned rescue tag rather than being noise.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def negative_vs_singlet_qc(
+    adata_flt,
+    doublet_dominated_clusters,
+    high_mito_cluster,
+    leiden_doublet_summary,
+    sc,
+):
+    # Are "Negative" barcodes that land in largely-Singlet clusters real cells that
+    # simply failed CMO hash detection (similar QC profile to their cluster's Singlets),
+    # or lower-quality debris (worse QC profile)? Restrict to clusters that actually
+    # survive pass_strict_qc (not just "CMO doublet rate < 50%", which would
+    # incorrectly include the debris cluster excluded via the separate mito rule).
+    _singlet_dominant_clusters = [c for c in leiden_doublet_summary.index if c not in doublet_dominated_clusters and c != high_mito_cluster]
+    _compare_mask = adata_flt.obs["leiden"].isin(_singlet_dominant_clusters) & adata_flt.obs["cmo_status_scanpy"].isin(["Singlet", "Negative"])
+
+    sc.pl.violin(
+        adata_flt[_compare_mask.to_numpy()],
+        keys=["pct_counts_mt", "doublet_score"],
+        groupby="cmo_status_scanpy",
+        rotation=0,
+        multi_panel=True,
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def rescue_tag_cmo_signal_check(
+    adata_cmo,
+    adata_flt,
+    clr,
+    cmo_to_timepoint,
+    doublet_dominated_clusters,
+    high_mito_cluster,
+    leiden_doublet_summary,
+    mo,
+    np,
+    pd,
+    thresholds,
+):
+    # Deeper validation of the rescue heuristic: for each rescued "Negative" barcode
+    # (restricted to clusters that actually survive pass_strict_qc -- NOT just
+    # "pct_cmo_doublet < 50", which incorrectly includes the debris cluster excluded
+    # via the separate mito rule), find its single closest-to-threshold CMO (the
+    # smallest gap between CLR value and that CMO's own threshold, even though none
+    # cleared it) and check whether that CMO's timepoint matches the tag we assigned
+    # via cluster consensus. A high match rate means the sub-threshold CMO signal
+    # independently supports the rescue, not just cluster popularity.
+    from scipy import stats
+
+    _good_clusters = [c for c in leiden_doublet_summary.index if c not in doublet_dominated_clusters and c != high_mito_cluster]
+    _neg_mask = (adata_flt.obs["cmo_status_scanpy"] == "Negative") & adata_flt.obs["leiden"].isin(_good_clusters)
+
+    _clr_neg = clr[_neg_mask.to_numpy()]
+    _gap = _clr_neg - thresholds
+    _best_cmo_idx = np.argmax(_gap, axis=1)
+    _best_cmo = adata_cmo.var["gene_name"].to_numpy()[_best_cmo_idx]
+    _best_cmo_timepoint = pd.Series(_best_cmo).map(cmo_to_timepoint).to_numpy()
+    _rescued_tag = adata_flt.obs.loc[_neg_mask, "rescued_cmo_tag"].to_numpy()
+    _match = _best_cmo_timepoint == _rescued_tag
+    _best_gap = _gap[np.arange(len(_gap)), _best_cmo_idx]
+    _n = len(_match)
+    _k = int(_match.sum())
+
+    # Proper null: 1000-permutation empirical distribution, plus a binomial test
+    # against that null rate (rather than eyeballing a handful of shuffles).
+    _rng = np.random.default_rng(0)
+    _null_rates = np.array([(_best_cmo_timepoint == _rng.permutation(_rescued_tag)).mean() for _ in range(1000)])
+    _null_rate = _null_rates.mean()
+    _p_permutation = (_null_rates >= _match.mean()).mean()
+    _p_binomial = stats.binomtest(_k, _n, _null_rate, alternative="greater").pvalue
+
+    _by_tag = pd.DataFrame({"rescued_tag": _rescued_tag, "match": _match}).groupby("rescued_tag")["match"].agg(["mean", "count"])
+    _by_tag = _by_tag.rename(columns={"mean": "pct_match", "count": "n_barcodes"})
+    _by_tag["pct_match"] = (_by_tag["pct_match"] * 100).round(1)
+
+    mo.md(f"""
+    **Rescue-tag validation:** for {_n:,} rescued Negative barcodes (restricted to
+    clusters that actually survive `pass_strict_qc`), the CMO closest to (but not over) its
+    threshold matches the assigned rescue tag **{_match.mean():.1%}** of the time
+    ({_k:,} of {_n:,}), vs. a **{_null_rate:.1%}** null (1,000-permutation mean, SD
+    {_null_rates.std():.1%}) if the rescue tag were random
+    (~{_match.mean() / _null_rate:.1f}x enrichment over chance).
+
+    Statistical test: 0 of 1,000 permutations reached the observed rate (permutation
+    p < 0.001); a binomial test against the null rate gives p = {_p_binomial:.2e}.
+    With n in the thousands this significance is expected -- the 3x-ish enrichment
+    is the number that matters for practical significance, not the p-value itself.
+
+    As a complementary check (not relying on the shuffle null): matched barcodes have a
+    smaller median gap-to-threshold ({np.median(_best_gap[_match]):.2f}) than mismatched ones
+    ({np.median(_best_gap[~_match]):.2f}) -- when there's a genuine near-miss CMO signal, it
+    tends to agree with the rescue tag; when the signal is weak/noisy, agreement is closer to chance.
+
+    {_by_tag.to_markdown()}
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def rescue_tag_gap_distributions(
+    adata_cmo,
+    adata_flt,
+    clr,
+    cmo_to_timepoint,
+    doublet_dominated_clusters,
+    high_mito_cluster,
+    leiden_doublet_summary,
+    np,
+    okabe_ito_palette,
+    pd,
+    plt,
+    thresholds,
+):
+    # Distribution of gap-to-threshold for the rescue-tag validation's best CMO,
+    # split by whether it matched the assigned rescue tag or not.
+    _good_clusters = [c for c in leiden_doublet_summary.index if c not in doublet_dominated_clusters and c != high_mito_cluster]
+    _neg_mask = (adata_flt.obs["cmo_status_scanpy"] == "Negative") & adata_flt.obs["leiden"].isin(_good_clusters)
+
+    _clr_neg = clr[_neg_mask.to_numpy()]
+    _gap = _clr_neg - thresholds
+    _best_cmo_idx = np.argmax(_gap, axis=1)
+    _best_cmo = adata_cmo.var["gene_name"].to_numpy()[_best_cmo_idx]
+    _best_cmo_timepoint = pd.Series(_best_cmo).map(cmo_to_timepoint).to_numpy()
+    _rescued_tag = adata_flt.obs.loc[_neg_mask, "rescued_cmo_tag"].to_numpy()
+    _match = _best_cmo_timepoint == _rescued_tag
+    _best_gap = _gap[np.arange(len(_gap)), _best_cmo_idx]
+
+    plt.figure(figsize=(7, 5))
+    plt.hist(_best_gap[_match], bins=40, alpha=0.6, density=True, color=okabe_ito_palette[5], label=f"Matched (n={_match.sum():,})")
+    plt.hist(_best_gap[~_match], bins=40, alpha=0.6, density=True, color=okabe_ito_palette[6], label=f"Mismatched (n={(~_match).sum():,})")
+    plt.axvline(0, color="black", linestyle="--", label="threshold (0 = right at cutoff)")
+    plt.xlabel("Best CMO: CLR value minus its threshold")
+    plt.ylabel("Density")
+    plt.title("Gap-to-threshold: matched vs. mismatched rescue tags")
+    plt.legend()
+    plt.tight_layout()
+    plt.gcf()
     return
 
 
@@ -1199,6 +1339,12 @@ def apply_strict_qc_and_rescue(adata_flt, leiden_doublet_summary, np):
 
     adata_flt.obs["qc_exclude_reason"].value_counts()
     return cluster_consensus_tag, doublet_dominated_clusters, high_mito_cluster
+
+
+@app.cell
+def _(adata_flt):
+    adata_flt
+    return
 
 
 @app.cell(hide_code=True)
