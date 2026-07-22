@@ -57,6 +57,17 @@ def stream_download(href: str, dest: Path, conn: Connection) -> None:
 
 def get_fastq_hrefs(aux_accession: str, conn: Connection) -> tuple[str, str]:
     """Return (href_R1, href_R2) for the sequence files in an IGVF auxiliary set."""
+    hrefs = get_fastq_hrefs_ordered(aux_accession, conn, ["R1", "R2"])
+    return hrefs[0], hrefs[1]
+
+
+def get_fastq_hrefs_ordered(
+    aux_accession: str, conn: Connection, read_types: list[str]
+) -> list[str]:
+    """Return hrefs from an auxiliary set ordered by read_types.
+
+    Use when kb count needs more than two reads (e.g. R1, R2, R3).
+    """
     meta = conn.get(f"auxiliary-sets/{aux_accession}", frame="object")
     if not meta:
         raise ValueError(f"Auxiliary set not found: {aux_accession}")
@@ -65,25 +76,32 @@ def get_fastq_hrefs(aux_accession: str, conn: Connection) -> tuple[str, str]:
         for p in meta.get("files", [])
         if "sequence-files" in p
     ]
-    r1_href = r2_href = None
+    hrefs: dict[str, str] = {}
     for acc in seq_accessions:
         fm = conn.get(f"sequence-files/{acc}", frame="object")
-        read_type = fm.get("illumina_read_type", "")
-        if read_type == "R1":
-            r1_href = fm["href"]
-        elif read_type == "R2":
-            r2_href = fm["href"]
-    if not r1_href or not r2_href:
+        rt = fm.get("illumina_read_type", "")
+        if rt in read_types:
+            hrefs[rt] = fm["href"]
+    missing = [rt for rt in read_types if rt not in hrefs]
+    if missing:
         raise ValueError(
-            f"Could not find both R1 and R2 in auxiliary set {aux_accession}. "
-            f"Found R1={r1_href}, R2={r2_href}"
+            f"Could not find {missing} in auxiliary set {aux_accession}. Found: {list(hrefs)}"
         )
-    return r1_href, r2_href
+    return [hrefs[rt] for rt in read_types]
 
 
 # ---------------------------------------------------------------------------
 # seqspec
 # ---------------------------------------------------------------------------
+
+def download_seqspec(accession: str, dest: Path, conn: Connection) -> None:
+    """Download a seqspec YAML.gz from an IGVF configuration-file accession."""
+    if dest.exists():
+        logging.info("Already downloaded seqspec: %s", dest)
+        return
+    meta = conn.get(f"configuration-files/{accession}", frame="object")
+    stream_download(meta["href"], dest, conn)
+
 
 def find_seqspec(accession: str, seqspec_dir: Path) -> Path:
     """Find the seqspec YAML.gz for a given auxiliary set accession."""
@@ -163,7 +181,12 @@ def run_shell_cmd(cmd: str) -> str:
 # KITE pipeline steps (delegated to the igvf-kite-cmo atomic workflow)
 # ---------------------------------------------------------------------------
 
-def prepare_cmo_barcodes(accession: str, dest: Path) -> None:
+def prepare_cmo_barcodes(
+    accession: str,
+    dest: Path,
+    sequence_col: str = "multiseq_bc",
+    name_col: str = "CMO ID",
+) -> None:
     """
     Download a CMO barcode CSV from IGVF and write a KITE-format gzipped TSV.
     Delegates to: run_kite prepare-barcodes --accession <accession> --output <dest>
@@ -175,6 +198,8 @@ def prepare_cmo_barcodes(accession: str, dest: Path) -> None:
     run_shell_cmd(
         f"{sys.executable} {RUN_KITE} prepare-barcodes "
         f"--accession {accession} "
+        f"--sequence-col '{sequence_col}' "
+        f"--name-col '{name_col}' "
         f"--output {dest}"
     )
 
@@ -199,8 +224,7 @@ def build_index(cmo_barcodes: Path, index_dir: Path, temp_dir: Path | None) -> N
 
 def quantify_channel(
     channel: str,
-    r1: Path,
-    r2: Path,
+    fastqs: list[Path],
     index_dir: Path,
     onlist: Path,
     read_format: str,
@@ -211,7 +235,8 @@ def quantify_channel(
 ) -> None:
     """
     Quantify CMO tags for one channel; skips if h5ad output already exists.
-    Delegates to: run_kite quantify --index_dir ... --output_dir ... <R1> <R2>
+    Delegates to: run_kite quantify --index_dir ... --output_dir ... <fastqs...>
+    fastqs are passed in the order expected by the kb read format string.
     """
     out = output_dir / channel
     if (out / "counts_unfiltered" / "adata.h5ad").exists():
@@ -219,6 +244,7 @@ def quantify_channel(
         return
     out.mkdir(parents=True, exist_ok=True)
     tmp = f"--temp_dir {temp_dir}" if temp_dir else ""
+    fastq_args = " ".join(str(f) for f in fastqs)
     run_shell_cmd(
         f"{sys.executable} {RUN_KITE} quantify "
         f"--index_dir {index_dir} "
@@ -228,6 +254,6 @@ def quantify_channel(
         f"--threads {threads} "
         f"--memory {memory} "
         f"{tmp} "
-        f"{r1} {r2}"
+        f"{fastq_args}"
     )
     logging.info("Done: %s -> %s", channel, out)

@@ -134,8 +134,7 @@ def main() -> None:
 
         quantify_channel(
             channel=channel,
-            r1=r1,
-            r2=r2,
+            fastqs=[r1, r2],
             index_dir=index_dir,
             onlist=onlist_dest,
             read_format=read_format,
