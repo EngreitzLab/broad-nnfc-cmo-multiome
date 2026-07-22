@@ -12,6 +12,7 @@ For Slurm, use the accompanying .sbatch file.
 """
 
 import argparse
+import gzip
 import logging
 import sys
 from pathlib import Path
@@ -100,10 +101,14 @@ def main() -> None:
     index_dir = work / "kite_index"
     build_index(cmo_barcodes, index_dir, temp_dir=work / "tmp")
 
-    # 3. Barcode onlist
-    onlist_dest = work / f"{args.onlist_accession}.tsv.gz"
+    # 3. Barcode onlist (bustools correct requires uncompressed)
+    onlist_gz = work / f"{args.onlist_accession}.tsv.gz"
     onlist_meta = conn.get(f"tabular-files/{args.onlist_accession}", frame="object")
-    stream_download(onlist_meta["href"], onlist_dest, conn)
+    stream_download(onlist_meta["href"], onlist_gz, conn)
+    onlist_dest = onlist_gz.with_suffix("")  # .tsv
+    if not onlist_dest.exists():
+        logging.info("Decompressing onlist -> %s", onlist_dest)
+        onlist_dest.write_bytes(gzip.decompress(onlist_gz.read_bytes()))
 
     # 4. FASTQs + quantification per channel
     channel_accessions = {
