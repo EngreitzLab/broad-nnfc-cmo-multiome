@@ -1,6 +1,7 @@
 import gzip
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -242,6 +243,9 @@ def quantify_channel(
     if (out / "counts_unfiltered" / "adata.h5ad").exists():
         logging.info("Already done: %s", channel)
         return
+    if out.exists():
+        logging.info("Cleaning previous partial run: %s", out)
+        shutil.rmtree(out)
     out.mkdir(parents=True, exist_ok=True)
     tmp = f"--temp_dir {temp_dir}" if temp_dir else ""
     fastq_args = " ".join(str(f) for f in fastqs)
