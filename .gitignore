@@ -187,6 +187,8 @@ cython_debug/
 /seqspecs/
 /seqspec_vars/
 /IU_Logs/
+/log/
+/env/
 
 # Local editor and OS state
 .DS_Store

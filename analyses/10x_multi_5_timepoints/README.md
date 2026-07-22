@@ -1,5 +1,10 @@
 # CMO Multiome Processing Pipeline
 
+> **Processed data on IGVF portal**
+> All processed files for this dataset are available on the IGVF portal as analysis sets:
+> - Channel 1: [IGVFDS5477BPOI](https://data.igvf.org/analysis-sets/IGVFDS5477BPOI)
+> - Channel 2: [IGVFDS3995WHFT](https://data.igvf.org/analysis-sets/IGVFDS3995WHFT)
+
 This README records the commands used to reconstruct per-channel GEX and CMO FASTQs from the mixed 10x multiome / CMO 5 timepoints sequencing data.
 
 The reason why this is necessary is that the 10x multiome 5 timepoints data was sequenced in a way that mixes CMO and GEX reads in the same FASTQ files. The CMO and GEX reads can be separated based on the presence of CMO barcode sequences, but this requires custom processing steps.
@@ -23,10 +28,17 @@ Do not merge channel1 and channel2 cell barcodes before downstream processing.
 
 ## Environment setup
 
+The project conda environment contains all required tools (`kb-python`, `splitcode`, `seqspec`, `igvf-utils`). Build it once with:
+
 ```bash
-conda create -n kb-splitcode -c conda-forge -c bioconda splitcode kb-python
-salloc --partition=engreitz --time=02:00:00 --mem=16G --cpus-per-task=4
-conda activate kb-splitcode
+sbatch /oak/stanford/groups/engreitz/Users/emattei/git/broad-nnfc-cmo-multiome/config/conda/build_env.sbatch
+```
+
+Activate for interactive use:
+
+```bash
+source /home/users/emattei/miniforge3/etc/profile.d/conda.sh
+conda activate /oak/stanford/groups/engreitz/Users/emattei/git/broad-nnfc-cmo-multiome/env/nnfc-cmo-multiome
 ```
 
 ---
@@ -434,76 +446,33 @@ ln -s ${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Splitcode/channel2_CMO_R2.
 
 ## 15. KITE workflow
 
-Download onlist file:
+CMO quantification is automated via `cmo_quantification/quantify_cmo_tags.py`. The script downloads all inputs from IGVF (FASTQs, CMO barcodes, barcode onlist), derives the read format from the seqspec, builds the KITE index, and runs `kb count` for both channels. See [`cmo_quantification/README.md`](cmo_quantification/README.md) for full details.
+
+| Input | IGVF accession |
+|---|---|
+| Channel 1 FASTQs | `IGVFDS2186TMQE` |
+| Channel 2 FASTQs | `IGVFDS0370XXMJ` |
+| CMO barcodes | `IGVFFI9308MNHO` |
+| Cell barcode onlist | `IGVFFI8751YQRY` |
+
+Submit the Slurm job:
 
 ```bash
-wget https://api.data.igvf.org/tabular-files/IGVFFI8751YQRY/@@download/IGVFFI8751YQRY.tsv.gz \
-  -O ${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Metadata/IGVFFI8751YQRY.tsv.gz
-gunzip ${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Metadata/IGVFFI8751YQRY.tsv.gz
+sbatch analyses/10x_multi_5_timepoints/cmo_quantification/quantify_cmo_tags.sbatch
 ```
 
-Prepare the `cmo_barcodes_for_kite.tsv` file for KITE:
-
-```bash
-awk 'NR>1 && $1 !~ /^>/ {print $1"\t"$2}' ${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Metadata/10x_5_timepoints_cmo_25_splitcode.config \
-  > ${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Metadata/cmo_barcodes_for_kite.tsv
-```
-
-Create index for KITE:
-
-```bash
-kb ref \
-  --workflow kite \
-  -i ${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Kite/cmo.idx \
-  -g ${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Kite/cmo_t2g.txt \
-  -f1 ${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Kite/cmo_cdna.fa \
-  ${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Metadata/cmo_barcodes_for_kite.tsv
-```
-
-Channel 1:
-
-```bash
-kb count \
-  --workflow kite \
-  -i ${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Kite/cmo.idx \
-  -g ${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Kite/cmo_t2g.txt \
-  -x 0,0,16:0,16,28:1,0,15 \
-  -w ${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Metadata/IGVFFI8751YQRY.tsv \
-  --h5ad \
-  -o ${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/CMO_counts/channel1 \
-  ${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Processed_FASTQs/channel1_CMO_R1.fastq.gz \
-  ${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Processed_FASTQs/channel1_CMO_R2.fastq.gz
-```
-
-Channel 2:
-
-```bash
-kb count \
-  --workflow kite \
-  -i ${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Kite/cmo.idx \
-  -g ${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Kite/cmo_t2g.txt \
-  -x 0,0,16:0,16,28:1,0,15 \
-  -w ${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Metadata/IGVFFI8751YQRY.tsv \
-  --h5ad \
-  -o ${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/CMO_counts/channel2 \
-  ${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Processed_FASTQs/channel2_CMO_R1.fastq.gz \
-  ${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Processed_FASTQs/channel2_CMO_R2.fastq.gz
-```
+Outputs are written to `${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/CMO_counts/channel{1,2}/`.
 
 ## Conclusions
 
-Final processed files to use for downstream analysis:
-- channel1: 
-  - `${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Processed_FASTQs/channel1_GEX_R1.fastq.gz`
-  - `${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Processed_FASTQs/channel1_GEX_R2.fastq.gz`
-  - `${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Processed_FASTQs/channel1_CMO_R1.fastq.gz`
-  - `${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Processed_FASTQs/channel1_CMO_R2.fastq.gz`
-- channel2: 
-  - `${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Processed_FASTQs/channel2_GEX_R1.fastq.gz`
-  - `${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Processed_FASTQs/channel2_GEX_R2.fastq.gz`
-  - `${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Processed_FASTQs/channel2_CMO_R1.fastq.gz`
-  - `${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Processed_FASTQs/channel2_CMO_R2.fastq.gz`
-- channel1_CMO: 
-  - `${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/CMO_counts/channel1/counts_unfiltered`
-- channel2_CMO: 
-  - `${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/CMO_counts/channel2/counts_unfiltered`
+Final processed files for downstream analysis:
+
+**GEX FASTQs** (split by splitcode, steps 6–7):
+- `${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Processed_FASTQs/channel1_GEX_R1.fastq.gz`
+- `${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Processed_FASTQs/channel1_GEX_R2.fastq.gz`
+- `${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Processed_FASTQs/channel2_GEX_R1.fastq.gz`
+- `${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/Processed_FASTQs/channel2_GEX_R2.fastq.gz`
+
+**CMO counts** (step 15, automated):
+- `${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/CMO_counts/channel1/counts_unfiltered/adata.h5ad`
+- `${OAK}/Projects/EC_Screen/Data/10x_5_timepoints/CMO_counts/channel2/counts_unfiltered/adata.h5ad`
