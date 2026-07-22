@@ -31,7 +31,7 @@ Downloads and intermediate files (index, FASTQs) are staged to `--work-dir` (use
 sbatch analyses/10x_multi_5_timepoints/cmo_quantification/quantify_cmo_tags.sbatch
 ```
 
-Resources: 8 CPUs, 32 GB RAM, 8 h walltime on `normal` partition.
+Resources: 8 CPUs, 32 GB RAM, 8 h walltime on `engreitz` partition.
 
 ### Interactive (testing only)
 

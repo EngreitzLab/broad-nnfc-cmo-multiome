@@ -6,23 +6,28 @@ IGVF analysis set: [IGVFDS1612ZNCA](https://data.igvf.org/analysis-sets/IGVFDS16
 
 ## Overview
 
-Single channel, three-read CMO library (R1 = cell barcode + UMI, R2 = CMO tag, R3 = cDNA). All inputs are downloaded from IGVF — no local data files required.
+Single channel. The CMO library has three reads (R1 = cell barcode + UMI, R2 = MULTI-seq CMO tag, R3 = cDNA) but only R1 and R2 are needed for CMO quantification. All inputs are downloaded from IGVF — no local data files required.
 
 1. **CMO barcodes** — downloads `IGVFFI5955PKRW` and converts to KITE TSV (`barcode` → sequence, `sample description` → name)
 2. **KITE index** — builds the kallisto index from the CMO barcodes
 3. **Barcode onlist** — downloads `IGVFFI8751YQRY` (10x multiome cell barcode whitelist) and decompresses
-4. **Seqspec** — downloads `IGVFFI6462KGWB` from IGVF and runs `seqspec index -m tag -s file -t kb` to derive the kb read format
-5. **FASTQs** — downloads R1, R2, R3 from auxiliary set `IGVFDS4882ESVG`
-6. **Quantification** — runs `kb count` with R1, R2, R3 in order
+4. **FASTQs** — downloads R1 and R2 from auxiliary set `IGVFDS4882ESVG`
+5. **Quantification** — runs `kb count` with R1 and R2 using hardcoded read format `0,0,16:0,16,28:1,0,8`
+
+## Read format
+
+The kb read format is hardcoded as `0,0,16:0,16,28:1,0,8` (file0=R1: cell barcode bp 0–16, file0=R1: UMI bp 16–28, file1=R2: CMO tag bp 0–8). This was derived manually by inspecting the seqspec YAML (`IGVFFI6462KGWB`).
+
+The `seqspec index -m tag -s file -t kb` tool cannot be used for this library because it produces a syntactically invalid format string — it emits six comma-separated values in the first segment instead of the required three, resulting in a string like `0,0,16,2,0,8:0,16,28:` that `kb count` rejects. The root cause is that the seqspec YAML for this library describes the CMO tag region in a way the tool does not handle correctly. The hardcoded format was validated against the seqspec source and confirmed correct.
 
 ## IGVF accessions
 
 | Resource | Accession | Description |
 |---|---|---|
-| CMO auxiliary set | `IGVFDS4882ESVG` | R1 (barcode+UMI), R2 (CMO tag), R3 (cDNA), I1 |
+| CMO auxiliary set | `IGVFDS4882ESVG` | R1 (barcode+UMI), R2 (CMO tag), R3 (cDNA, unused), I1 (unused) |
 | CMO barcodes | `IGVFFI5955PKRW` | Barcode-to-sample map (`barcode`, `sample description` columns) |
 | Cell barcode onlist | `IGVFFI8751YQRY` | 10x multiome barcode whitelist |
-| CMO seqspec | `IGVFFI6462KGWB` | seqspec YAML for the CMO library |
+| CMO seqspec | `IGVFFI6462KGWB` | seqspec YAML (reference only — read format is hardcoded, see above) |
 
 ## Usage
 
@@ -32,7 +37,7 @@ Single channel, three-read CMO library (R1 = cell barcode + UMI, R2 = CMO tag, R
 sbatch analyses/10x_multi_5_timepoints_mcginnis/cmo_quantification/quantify_cmo_tags.sbatch
 ```
 
-Resources: 8 CPUs, 32 GB RAM, 8 h walltime on `normal` partition.
+Resources: 8 CPUs, 32 GB RAM, 8 h walltime on `engreitz` partition.
 
 ### Interactive (testing only)
 

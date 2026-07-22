@@ -13,6 +13,14 @@ GEX and CMO reads arrive mixed in the same FASTQs and must be separated with `sp
 | Channel 1 | [IGVFDS5477BPOI](https://data.igvf.org/analysis-sets/IGVFDS5477BPOI) |
 | Channel 2 | [IGVFDS3995WHFT](https://data.igvf.org/analysis-sets/IGVFDS3995WHFT) |
 
+### [10x multiome — 5 timepoints (McGinnis)](analyses/10x_multi_5_timepoints_mcginnis/cmo_quantification/README.md)
+
+Single-channel CMO library sequenced as a standard 10x multiome run (no splitcode required). CMO tag is in R2 (MULTI-seq barcode, 8 bp); R3 carries cDNA and is not used for CMO quantification.
+
+| Channel | IGVF analysis set |
+|---|---|
+| Single channel | [IGVFDS1612ZNCA](https://data.igvf.org/analysis-sets/IGVFDS1612ZNCA/) |
+
 ### [10x multiome — 15 timepoints](analyses/10x_multi_15_timepoints/README.md)
 
 GEX, CMO, and ATAC reads arrive pre-demultiplexed (separate sample indices). No `splitcode` step required.
@@ -21,10 +29,12 @@ GEX, CMO, and ATAC reads arrive pre-demultiplexed (separate sample indices). No 
 
 ```
 analyses/
-  10x_multi_5_timepoints/      # 5 tp pipeline (manual steps 1–14 + automated CMO quant)
-    cmo_quantification/        # end-to-end CMO quantification from IGVF accessions
-  10x_multi_15_timepoints/     # 15 tp pipeline scripts
-  create_seqspecs/             # marimo notebook for generating seqspec YAMLs
+  10x_multi_5_timepoints/          # 5 tp pipeline (manual steps 1–14 + automated CMO quant)
+    cmo_quantification/            # end-to-end CMO quantification from IGVF accessions
+  10x_multi_5_timepoints_mcginnis/ # McGinnis 5 tp pipeline (single channel, automated CMO quant)
+    cmo_quantification/            # end-to-end CMO quantification from IGVF accessions
+  10x_multi_15_timepoints/         # 15 tp pipeline scripts
+  create_seqspecs/                 # marimo notebook for generating seqspec YAMLs
 config/
   conda/                       # conda environment definition and build sbatch
   splitcode/                   # splitcode tag configs for 5 tp and 15 tp datasets
