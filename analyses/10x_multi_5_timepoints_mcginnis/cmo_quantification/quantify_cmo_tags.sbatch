@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -J cmo-quantification-mcginnis
-#SBATCH -p normal
+#SBATCH -p engreitz
 #SBATCH --time=08:00:00
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32GB
