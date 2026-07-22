@@ -190,24 +190,20 @@ def prepare_cmo_barcodes(
     name_col: str = "CMO ID",
 ) -> None:
     """
-    Download a CMO barcode file from IGVF and write a KITE-format gzipped TSV.
-    Downloads the file directly (preserving the correct extension) then delegates
-    to: run_kite prepare-barcodes --input <file> --output <dest>
-    This avoids the hardcoded .csv.gz extension in run_kite's --accession path.
+    Download a CMO barcode file from IGVF and write a KITE-format gzipped TSV
+    (two columns: sequence<TAB>name). Delegates to run_kite prepare-barcodes.
     """
     if dest.exists():
         logging.info("CMO barcodes already prepared: %s", dest)
         return
-    meta = conn.get(f"tabular-files/{accession}", frame="object")
-    raw = dest.parent / Path(meta["href"]).name
-    stream_download(meta["href"], raw, conn)
     run_shell_cmd(
         f"{sys.executable} {RUN_KITE} prepare-barcodes "
-        f"--input {raw} "
+        f"--accession {accession} "
         f"--sequence-col '{sequence_col}' "
         f"--name-col '{name_col}' "
         f"--output {dest}"
     )
+    logging.info("CMO barcodes prepared: %s", dest)
 
 
 def build_index(cmo_barcodes: Path, index_dir: Path, temp_dir: Path | None) -> None:
