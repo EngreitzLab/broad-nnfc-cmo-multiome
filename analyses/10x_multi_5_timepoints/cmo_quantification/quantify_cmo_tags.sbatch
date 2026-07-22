@@ -13,9 +13,16 @@ source /home/users/emattei/miniforge3/etc/profile.d/conda.sh
 conda activate /oak/stanford/groups/engreitz/Users/emattei/git/broad-nnfc-cmo-multiome/env/nnfc-cmo-multiome
 
 SCRIPT="/oak/stanford/groups/engreitz/Users/emattei/git/broad-nnfc-cmo-multiome/analyses/10x_multi_5_timepoints/cmo_quantification/quantify_cmo_tags.py"
-WORK_DIR="${L_SCRATCH}/cmo_quant"
+CHANNEL="${1:-}"  # optional: channel1 or channel2; omit to run both
+WORK_DIR="${L_SCRATCH}/cmo_quant${CHANNEL:+_${CHANNEL}}"
+
+CHANNEL_ARG=""
+if [ -n "${CHANNEL}" ]; then
+    CHANNEL_ARG="--channels ${CHANNEL}"
+fi
 
 python "${SCRIPT}" \
     --work-dir "${WORK_DIR}" \
     --threads "${SLURM_CPUS_PER_TASK}" \
-    --memory 8G
+    --memory 8G \
+    ${CHANNEL_ARG}
