@@ -185,20 +185,25 @@ def run_shell_cmd(cmd: str) -> str:
 def prepare_cmo_barcodes(
     accession: str,
     dest: Path,
+    conn: Connection,
     sequence_col: str = "multiseq_bc",
     name_col: str = "CMO ID",
 ) -> None:
     """
-    Download a CMO barcode CSV from IGVF and write a KITE-format gzipped TSV.
-    Delegates to: run_kite prepare-barcodes --accession <accession> --output <dest>
-    Auth is read from .env by run_kite.
+    Download a CMO barcode file from IGVF and write a KITE-format gzipped TSV.
+    Downloads the file directly (preserving the correct extension) then delegates
+    to: run_kite prepare-barcodes --input <file> --output <dest>
+    This avoids the hardcoded .csv.gz extension in run_kite's --accession path.
     """
     if dest.exists():
         logging.info("CMO barcodes already prepared: %s", dest)
         return
+    meta = conn.get(f"tabular-files/{accession}", frame="object")
+    raw = dest.parent / Path(meta["href"]).name
+    stream_download(meta["href"], raw, conn)
     run_shell_cmd(
         f"{sys.executable} {RUN_KITE} prepare-barcodes "
-        f"--accession {accession} "
+        f"--input {raw} "
         f"--sequence-col '{sequence_col}' "
         f"--name-col '{name_col}' "
         f"--output {dest}"

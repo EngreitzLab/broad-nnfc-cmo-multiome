@@ -95,7 +95,7 @@ def main() -> None:
 
     # 1. CMO barcodes -> KITE TSV
     cmo_barcodes = work / "cmo_barcodes_for_kite.tsv.gz"
-    prepare_cmo_barcodes(args.cmo_accession, cmo_barcodes)
+    prepare_cmo_barcodes(args.cmo_accession, cmo_barcodes, conn)
 
     # 2. KITE index
     index_dir = work / "kite_index"

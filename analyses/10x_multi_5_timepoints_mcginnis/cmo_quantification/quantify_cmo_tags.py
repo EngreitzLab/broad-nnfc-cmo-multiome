@@ -91,7 +91,7 @@ def main() -> None:
     # 1. CMO barcodes -> KITE TSV
     cmo_barcodes = work / "cmo_barcodes_for_kite.tsv.gz"
     prepare_cmo_barcodes(
-        args.cmo_accession, cmo_barcodes,
+        args.cmo_accession, cmo_barcodes, conn,
         sequence_col=CMO_SEQUENCE_COL,
         name_col=CMO_NAME_COL,
     )
