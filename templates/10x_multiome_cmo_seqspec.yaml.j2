@@ -17,7 +17,7 @@ sequence_spec:
   read_id: {{ read1_id }}
   name: {{ read1_name }}
   modality: tag
-  primer_id: tag-truseq_read1
+  primer_id: tag-anchor
   min_len: 28
   max_len: 28
   strand: pos
@@ -38,10 +38,10 @@ sequence_spec:
   read_id: {{ read2_id }}
   name: {{ read2_name }}
   modality: tag
-  primer_id: tag-truseq_read2
+  primer_id: tag-umi
   min_len: 44
   max_len: 44
-  strand: neg
+  strand: pos
   files:
 {% if read2_files is defined and read2_files %}
 {% for f in read2_files %}
@@ -61,19 +61,19 @@ library_spec:
   region_type: tag
   name: tag
   sequence_type: joined
-  sequence: ACACTCTTTCCCTACACGACGCTCTTCCGATCTNNNNNNNNNNNNNNNNXXXXXXXXXXXXNNNNNNNNNNNNNNNNAGATCGGAAGAGCACACGTCTGAACTCCAGTCAC
-  min_len: 110
-  max_len: 110
+  sequence: NNNNNNNNNNNNNNNNXXXXXXXXXXXXNNNNNNNNNNNNNNNXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+  min_len: 72
+  max_len: 72
   onlist: null
   regions:
   - !Region
-    region_id: tag-truseq_read1
-    region_type: truseq_read1
-    name: tag-truseq_read1
+    region_id: tag-anchor
+    region_type: linker
+    name: tag-anchor
     sequence_type: fixed
-    sequence: ACACTCTTTCCCTACACGACGCTCTTCCGATCT
-    min_len: 33
-    max_len: 33
+    sequence: ""
+    min_len: 0
+    max_len: 0
     onlist: null
     regions: null
     parent_id: tag
@@ -108,7 +108,7 @@ library_spec:
     parent_id: tag
   - !Region
     region_id: cmo_barcode
-    region_type: barcode
+    region_type: tag
     name: MULTI-seq CMO barcode
     sequence_type: onlist
     sequence: NNNNNNNNNNNNNNN
@@ -125,13 +125,13 @@ library_spec:
     regions: null
     parent_id: tag
   - !Region
-    region_id: tag-truseq_read2
-    region_type: truseq_read2
-    name: tag-truseq_read2
-    sequence_type: fixed
-    sequence: AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC
-    min_len: 34
-    max_len: 34
+    region_id: tag-random
+    region_type: poly_A
+    name: tag-random
+    sequence_type: random
+    sequence: XXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+    min_len: 29
+    max_len: 29
     onlist: null
     regions: null
     parent_id: tag
