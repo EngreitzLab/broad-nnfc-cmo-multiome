@@ -2,8 +2,12 @@
 """
 End-to-end CMO quantification for the 10x multiome 5 timepoints McGinnis dataset.
 
-Single channel, three-read CMO library (R1=cell barcode+UMI, R2=CMO tag, R3=cDNA).
-Seqspec is fetched from IGVF (IGVFFI6462KGWB) and used to derive the kb read format.
+Single channel. CMO library structure (from seqspec IGVFFI6462KGWB):
+  R1 (IGVFFI5411OJRK): cell barcode (0-16bp) + UMI (16-28bp)
+  R2 (IGVFFI4642YKWI): MULTI-seq barcode / CMO tag (0-8bp)
+  R3 (IGVFFI5223HYRP): cDNA — not used for CMO quantification
+  I1 (IGVFFI6088QALC): i7 index — not used for CMO quantification
+
 CMO barcode columns: 'barcode' (sequence) and 'sample description' (name).
 
 Usage:
@@ -23,9 +27,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts" / "python"))
 
 from utils import (
     build_index,
-    download_seqspec,
     get_fastq_hrefs_ordered,
-    get_read_format,
     make_connection,
     prepare_cmo_barcodes,
     quantify_channel,
@@ -39,14 +41,18 @@ logging.basicConfig(
 )
 
 # IGVF accessions
-DEFAULT_AUX_ACCESSION = "IGVFDS4882ESVG"       # CMO auxiliary set (R1, R2, R3, I1)
-DEFAULT_CMO_ACCESSION = "IGVFFI5955PKRW"        # CMO barcode-to-sample map
-DEFAULT_ONLIST_ACCESSION = "IGVFFI8751YQRY"     # 10x multiome cell barcode whitelist
-DEFAULT_SEQSPEC_ACCESSION = "IGVFFI6462KGWB"    # seqspec for CMO library
+DEFAULT_AUX_ACCESSION = "IGVFDS4882ESVG"    # CMO auxiliary set
+DEFAULT_CMO_ACCESSION = "IGVFFI5955PKRW"    # CMO barcode-to-sample map
+DEFAULT_ONLIST_ACCESSION = "IGVFFI8751YQRY" # 10x multiome cell barcode whitelist
 
-# CMO barcode file uses different column names than the 5 timepoints dataset
+# CMO barcode file column names (differ from the 5 timepoints dataset)
 CMO_SEQUENCE_COL = "barcode"
 CMO_NAME_COL = "sample description"
+
+# kb read format: file0=R1 (barcode 0-16, UMI 16-28), file1=R2 (CMO tag 0-8)
+# Derived manually from seqspec IGVFFI6462KGWB — the seqspec tool output is
+# syntactically wrong for this library.
+READ_FORMAT = "0,0,16:0,16,28:1,0,8"
 
 DEFAULT_OUTPUT_DIR = Path("/oak/stanford/groups/engreitz/Projects/EC_Screen/Data/10x_5_timepoints_mcginnis/CMO_counts")
 
@@ -66,10 +72,6 @@ def main() -> None:
     parser.add_argument(
         "--onlist-accession", default=DEFAULT_ONLIST_ACCESSION,
         help=f"IGVF tabular file for cell barcode whitelist. Default: {DEFAULT_ONLIST_ACCESSION}",
-    )
-    parser.add_argument(
-        "--seqspec-accession", default=DEFAULT_SEQSPEC_ACCESSION,
-        help=f"IGVF configuration file for the CMO seqspec. Default: {DEFAULT_SEQSPEC_ACCESSION}",
     )
     parser.add_argument(
         "--work-dir", type=Path, required=True,
@@ -109,34 +111,24 @@ def main() -> None:
         logging.info("Decompressing onlist -> %s", onlist_dest)
         onlist_dest.write_bytes(gzip.decompress(onlist_gz.read_bytes()))
 
-    # 4. Seqspec -> kb read format (seqspec lives on IGVF for this dataset)
-    seqspec_gz = work / f"{args.seqspec_accession}.yaml.gz"
-    download_seqspec(args.seqspec_accession, seqspec_gz, conn)
-    read_format = get_read_format(seqspec_gz)
-    logging.info("Read format (from seqspec): %s", read_format)
-
-    # 5. FASTQs: R1 (barcode+UMI), R2 (CMO tag), R3 (cDNA) — order matters for kb
-    r1_href, r2_href, r3_href = get_fastq_hrefs_ordered(
-        args.aux_accession, conn, ["R1", "R2", "R3"]
+    # 4. FASTQs: R1 (barcode+UMI) and R2 (CMO tag) — file0 and file1
+    r1_href, r2_href = get_fastq_hrefs_ordered(
+        args.aux_accession, conn, ["R1", "R2"]
     )
     fastq_dir = work / "fastqs"
     fastq_dir.mkdir(exist_ok=True)
     r1 = fastq_dir / r1_href.strip("/").split("/")[-1]
     r2 = fastq_dir / r2_href.strip("/").split("/")[-1]
-    r3 = fastq_dir / r3_href.strip("/").split("/")[-1]
     stream_download(r1_href, r1, conn)
     stream_download(r2_href, r2, conn)
-    stream_download(r3_href, r3, conn)
 
-    # 6. Quantify — pass R1, R2, R3 in order; the seqspec format string
-    #    references file indices 0 (R1) and 2 (R3) for barcode/UMI and
-    #    file 0 again for the feature, so all three must be present.
+    # 5. Quantify
     quantify_channel(
         channel="cmo",
-        fastqs=[r1, r2, r3],
+        fastqs=[r1, r2],
         index_dir=index_dir,
         onlist=onlist_dest,
-        read_format=read_format,
+        read_format=READ_FORMAT,
         output_dir=args.output_dir,
         threads=args.threads,
         memory=args.memory,
