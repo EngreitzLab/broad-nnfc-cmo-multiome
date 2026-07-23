@@ -186,9 +186,12 @@ cython_debug/
 /annotations/
 /seqspecs/
 /seqspec_vars/
-/IU_Logs/
+IU_Logs/
 /log/
 /env/
+
+# marimo
+__marimo__/
 
 # Local editor and OS state
 .DS_Store
@@ -196,6 +199,7 @@ cython_debug/
 .Rhistory
 .RData
 .Ruserdata
+*.bak
 
 # Large or generated data files
 *.h5ad
