@@ -1,18 +1,35 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "altair>=6.1.0",
+#     "altair==6.2.2",
+#     "anndata==0.13.2",
+#     "decontx-python==0.2.0",
 #     "igraph>=1.0.0",
+#     "igvf-utils==3.1.1",
 #     "ipython>=9.13.0",
 #     "marimo>=0.23.3",
-#     "scanpy[scrublet]>=1.12.1",
-#     "snapatac2>=2.9.0",
+#     "matplotlib==3.11.1",
+#     "numpy==2.4.6",
+#     "pandas==2.3.3",
+#     "python-dotenv==1.2.2",
+#     "scanpy[scrublet]==1.12.2",
+#     "scclr==0.1.0",
+#     "scipy==1.18.0",
+#     "seaborn==0.13.2",
+#     "snapatac2==2.9.0",
+#     "statsmodels==0.14.6",
+#     "tabulate==0.10.0",
+#     "vegafusion==2.0.3",
+#     "vl-convert-python==1.9.0.post1",
 # ]
+#
+# [tool.uv.sources]
+# scclr = { git = "https://github.com/cleartools/scclr.git" }
 # ///
 
 import marimo
 
-__generated_with = "0.23.13"
+__generated_with = "0.23.14"
 app = marimo.App(width="full")
 
 
@@ -36,8 +53,64 @@ def _(mo):
     2. Run CMO hash classification (mimicking `Seurat::HTODemux`) on QC-passing cells
     3. Assign each cell barcode to a CMO (and therefore to a timepoint/replicate)
     4. Process the corresponding ATAC data with `snapatac2`
+
+    IGVF portal accessions
+
+    - Analysis set : [IGVFDS3995WHFT](https://data.igvf.org/analysis-sets/IGVFDS3995WHFT/)
+    - Gene count matrix: [IGVFFI8316SYHQ](https://data.igvf.org/matrix-files/IGVFFI8316SYHQ/)
+    - Fragment file: [IGVFFI3256WWXC](https://data.igvf.org/tabular-files/IGVFFI3256WWXC/)
     """)
     return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Download data from the portal
+
+    To be able to download the files you need to create a `.env` file in the repository root and add the lines
+    ```
+    IGVF_API_KEY=<your-api-key>
+    IGVF_SECRET_KEY=<your-api-secret>
+    ```
+    """)
+    return
+
+
+@app.cell
+def _(Connection, Path, project_root):
+    ch2_data_root_path = Path(project_root / "data/10X_miltiome_5_timepoints/channel2/")
+
+    ch2_outdir_root = Path(project_root /"results/10X_miltiome_5_timepoints/channel2")
+
+
+    # 1. Initialize the connection targeting the production portal
+    # It automatically picks up IGVF_API_KEY and IGVF_SECRET_KEY from the environment
+    conn = Connection(igvf_mode="prod")
+
+    # 2. Files to download: (accession, destination subfolder)
+    _files_to_download = [
+        ("IGVFFI8316SYHQ", ch2_data_root_path / "rna/h5ad"),
+        ("IGVFFI3256WWXC", ch2_data_root_path / "atac/fragments"),
+    ]
+
+    for _file_accession, _dest_dir in _files_to_download:
+        # Make sure the destination folder exists before writing into it
+        _dest_dir.mkdir(parents=True, exist_ok=True)
+
+        # Skip re-downloading if a file for this accession is already there (name
+        # matched via the portal's own href, since the served filename isn't known
+        # until conn.download() reads it off the response's Content-Disposition header)
+        _expected_name = conn.get(rec_ids=_file_accession)["href"].rsplit("/", 1)[-1]
+        _expected_path = _dest_dir / _expected_name
+        if _expected_path.exists():
+            print(f"{_expected_path} already exists, skipping download.")
+            continue
+
+        print(f"Downloading {_file_accession} to {_dest_dir}...")
+        _downloaded_path = conn.download(rec_id=_file_accession, directory=str(_dest_dir))
+        print(f"Successfully downloaded: {_downloaded_path}")
+    return ch2_data_root_path, ch2_outdir_root
 
 
 @app.cell(hide_code=True)
@@ -115,13 +188,18 @@ def _(mo):
 
 
 @app.cell
-def load_h5_counts(ad, gene_metadata_df, igvf_gencode_gtf_path, project_root):
+def load_h5_counts(
+    ad,
+    ch2_data_root_path,
+    gene_metadata_df,
+    igvf_gencode_gtf_path,
+):
     import gzip
     import re
 
     try:
-        _h5ad_fnp = "data/h5ad/10x_5timepoints_channel2.h5ad"
-        adata = ad.read_h5ad(project_root / _h5ad_fnp)
+        _h5ad_path = ch2_data_root_path / "rna/h5ad/IGVFFI8316SYHQ.h5ad"
+        adata = ad.read_h5ad(_h5ad_path)
 
         # -------------------------
         # Add gene metadata to var
@@ -667,7 +745,7 @@ def compute_knn_neighbors(adata_flt, mo, pca_computed, sc):
     mo.stop(not pca_computed) # ran after PCA
 
     def _run_neighbors(adata):
-        sc.pp.neighbors(adata)
+        sc.pp.neighbors(adata, random_state=0)
         return True
 
     neighbors_computed = _run_neighbors(adata_flt)
@@ -679,9 +757,13 @@ def leiden_clustering(adata_flt, mo, neighbors_computed, sc):
     mo.stop(not neighbors_computed)  # ran after the neighbor graph was computed
 
     # Using the igraph implementation and a fixed number of iterations can be significantly faster,
-    # especially for larger datasets
+    # especially for larger datasets. random_state is pinned explicitly (rather than
+    # relying on scanpy's default) so cluster identities are reproducible run-to-run;
+    # note this only guards against algorithm-internal nondeterminism, not against
+    # genuine changes to the input data (QC, CMO assignment, etc.), which will still
+    # legitimately shift which cells land in which cluster.
     def _run_leiden(adata):
-        sc.tl.leiden(adata, flavor="igraph", resolution=0.5, n_iterations=2)
+        sc.tl.leiden(adata, flavor="igraph", resolution=0.5, n_iterations=2, random_state=0)
         return True
 
     leiden_computed = _run_leiden(adata_flt)
@@ -692,14 +774,27 @@ def leiden_clustering(adata_flt, mo, neighbors_computed, sc):
 def mito_pct_per_leiden_cluster(
     adata_flt,
     alt,
+    doublet_dominated_clusters,
     leiden_computed,
     okabe_ito_palette,
 ):
     leiden_computed  # ran after leiden clustering
+    doublet_dominated_clusters  # ran after doublet-dominated clusters were identified
 
     # % mito per leiden cluster, to spot a mito-driven cluster before it gets a
     # dedicated deep-dive (see the cluster 2 sections below).
     _cluster_order = sorted(adata_flt.obs["leiden"].cat.categories, key=int)
+
+    _median_mito_by_cluster = adata_flt.obs.groupby("leiden", observed=True)["pct_counts_mt"].median()
+
+    # "Moderately elevated" clusters are picked out via the largest gap in the
+    # sorted per-cluster median %mito among non-doublet-dominated clusters (their
+    # mito elevation already has a separate explanation), rather than a fixed
+    # list, so this stays correct if Leiden renumbers clusters on a future re-run.
+    _non_doublet_medians = _median_mito_by_cluster.drop(index=doublet_dominated_clusters).sort_values(ascending=False)
+    _gaps = -_non_doublet_medians.diff().dropna()
+    _split = int(_gaps.to_numpy().argmax()) + 1
+    high_mito_clusters = sorted(_non_doublet_medians.index[:_split].tolist(), key=int)
 
     _box = alt.Chart(adata_flt.obs[["leiden", "pct_counts_mt"]]).mark_boxplot(
         color=okabe_ito_palette[5], size=25,
@@ -712,7 +807,7 @@ def mito_pct_per_leiden_cluster(
         title="% mitochondrial counts per leiden cluster",
         width=650, height=350,
     ).configure_view(strokeWidth=0)
-    return
+    return (high_mito_clusters,)
 
 
 @app.cell
@@ -940,36 +1035,25 @@ def _(mo):
     return
 
 
-@app.cell(hide_code=True)
-def initialize_cmo(ad, adata_flt, mmread, pd, project_root):
+@app.cell
+def initialize_cmo(ad, adata_flt, project_root):
     # path to the cmo counts
-    _cmo_counts_path = project_root / "data/cmo_counts/channel2/counts_unfiltered"
+    _cmo_counts_path = project_root / "data/10X_miltiome_5_timepoints/channel2/cmo_counts/adata.h5ad"
 
-    # the counts are in matrix market format
-    _cmo_mat = mmread(_cmo_counts_path / "cells_x_features.mtx").tocsr()
-    _cmo_barcodes = [
-        bc + "_10x_5timepoints_channel2"
-        for bc in (_cmo_counts_path / "cells_x_features.barcodes.txt").read_text().splitlines()
-    ]
-    _cmo_genes = (_cmo_counts_path / "cells_x_features.genes.txt").read_text().splitlines()
-    _cmo_gene_names = (_cmo_counts_path / "cells_x_features.genes.names.txt").read_text().splitlines()
+    adata_cmo = ad.read_h5ad(_cmo_counts_path)
 
-    # creating the adata for CMO counts
-    adata_cmo = ad.AnnData(
-        X=_cmo_mat,
-        obs=pd.DataFrame(index=_cmo_barcodes),
-        var=pd.DataFrame(
-            {"gene_name": _cmo_gene_names},
-            index=_cmo_genes,
-        ),
-    )
+    # CMO barcodes need the same per-sample suffix as adata_flt's RNA barcodes to match up
+    _barcode_suffix = "_" + adata_flt.obs_names[0].split("_", 1)[1]
+    adata_cmo.obs_names = adata_cmo.obs_names + _barcode_suffix
+
+    adata_cmo.var["gene_name"] = adata_cmo.var_names
 
     # Filter adata_cmo data to cells in adata_flt
     _cells_in_use = adata_flt.obs_names.intersection(adata_cmo.obs_names.to_list())
     adata_cmo = adata_cmo[_cells_in_use, :]
 
-    # Map each CMO to its timepoint: CMO01-05 = d0, CMO06-10 = d1, ..., CMO21-25 = d4
-    cmo_to_timepoint = {f"CMO{i:02d}": f"d{(i - 1) // 5}" for i in range(1, 26)}
+    # Map each CMO to its timepoint: CMO1-5 = d0, CMO6-10 = d1, ..., CMO21-25 = d4
+    cmo_to_timepoint = {f"CMO{i}": f"d{(i - 1) // 5}" for i in range(1, 26)}
 
     adata_cmo
     return adata_cmo, cmo_to_timepoint
@@ -1692,11 +1776,20 @@ def leiden_doublet_overview(adata_flt, cmo_assignment_computed):
 
 
 @app.cell(hide_code=True)
-def doublet_cluster_investigation_intro(mo):
-    mo.md(r"""
+def doublet_cluster_investigation_intro(
+    doublet_dominated_clusters,
+    leiden_doublet_summary,
+    mo,
+):
+    _dd_sorted = sorted(doublet_dominated_clusters, key=int)
+    _dd_list = ", ".join(f"**{c}**" for c in _dd_sorted)
+    _cmo_lo, _cmo_hi = leiden_doublet_summary.loc[_dd_sorted, "pct_cmo_doublet"].agg(["min", "max"])
+    _scrub_lo, _scrub_hi = leiden_doublet_summary.loc[_dd_sorted, "pct_scrublet_doublet"].agg(["min", "max"])
+
+    mo.md(f"""
     ## Doublet-dominated cluster investigation
 
-    Both methods agree that clusters **3**, **4**, and **8** are heavily doublet-dominated (CMO hashing 66-77%, Scrublet 83-99%).
+    Both methods agree that clusters {_dd_list} are heavily doublet-dominated (CMO hashing {_cmo_lo:.1f}-{_cmo_hi:.1f}%, Scrublet {_scrub_lo:.1f}-{_scrub_hi:.1f}%).
     """)
     return
 
@@ -1803,13 +1896,17 @@ def doublet_pct_forest_plot(
 
 
 @app.cell
-def n_pos_distribution_vs_null_intro(mo):
-    mo.md(r"""
+def n_pos_distribution_vs_null_intro(
+    mo,
+    representative_doublet_cluster,
+    representative_well_behaved_cluster,
+):
+    mo.md(f"""
     ### n_pos distribution vs. the random null
 
     Does each cluster's distribution of "number of positive CMOs" (n_pos, at the pipeline's actual q=0.95 threshold) match the random/binomial null, Binomial(n=25, p=1-0.95=0.05), or deviate from it?
 
-    Left: cluster 8, doublet-dominated. Right: cluster 0, well-behaved. Black bars are the empirical distribution, gray bars are the theoretical distribution expected under pure noise (no real CMO signal at all). If a cluster's black bars closely track the gray ones, its doublet calls are largely explained by the baseline false-positive rate of a 25-CMO panel. If they diverge sharply, especially with excess mass at n_pos=2 or higher, that cluster has real confounding beyond what chance alone would produce.
+    Left: cluster {representative_doublet_cluster}, doublet-dominated. Right: cluster {representative_well_behaved_cluster}, well-behaved. Black bars are the empirical distribution, gray bars are the theoretical distribution expected under pure noise (no real CMO signal at all). If a cluster's black bars closely track the gray ones, its doublet calls are largely explained by the baseline false-positive rate of a 25-CMO panel. If they diverge sharply, especially with excess mass at n_pos=2 or higher, that cluster has real confounding beyond what chance alone would produce.
     """)
     return
 
@@ -1824,6 +1921,8 @@ def n_pos_distribution_vs_null(
     okabe_ito_palette,
     pd,
     positive_quantile_threshold,
+    representative_doublet_cluster,
+    representative_well_behaved_cluster,
 ):
     # See n_pos_distribution_vs_null_intro above for the interpretation.
     from scipy.stats import binom as _binom_dist
@@ -1860,8 +1959,8 @@ def n_pos_distribution_vs_null(
         )
         return _bars.properties(title=title, width=340, height=340).configure_view(strokeWidth=0)
 
-    _chart_8 = _comparison_chart("8", "Cluster 8 (doublet-dominated)")
-    _chart_0 = _comparison_chart("0", "Cluster 0 (well-behaved)")
+    _chart_rep = _comparison_chart(representative_doublet_cluster, f"Cluster {representative_doublet_cluster} (doublet-dominated)")
+    _chart_well_behaved = _comparison_chart(representative_well_behaved_cluster, f"Cluster {representative_well_behaved_cluster} (well-behaved)")
 
     def _tight_row(*items):
         # mo.hstack with widths=None adds no wrapper/flex styling around children,
@@ -1872,53 +1971,85 @@ def n_pos_distribution_vs_null(
         )
         return mo.Html(f'<div style="display:flex; justify-content:flex-start; gap:1rem;">{_items_html}</div>')
 
-    _tight_row(_chart_8, _chart_0)
+    _tight_row(_chart_rep, _chart_well_behaved)
     return
 
 
 @app.cell(hide_code=True)
-def doublet_cluster_conclusion(mo):
-    mo.md(r"""
+def doublet_cluster_conclusion(
+    doublet_dominated_clusters,
+    leiden_doublet_summary,
+    mo,
+    representative_doublet_cluster,
+    representative_well_behaved_cluster,
+):
+    _dd_sorted = sorted(doublet_dominated_clusters, key=int)
+    _dd_list = ", ".join(_dd_sorted)
+    _cmo_lo, _cmo_hi = leiden_doublet_summary.loc[_dd_sorted, "pct_cmo_doublet"].agg(["min", "max"])
+    _scrub_lo, _scrub_hi = leiden_doublet_summary.loc[_dd_sorted, "pct_scrublet_doublet"].agg(["min", "max"])
+
+    mo.md(f"""
     ### Doublet-dominated clusters: conclusions
 
-    1. **Clusters 3, 4, and 8 are pure doublet clusters, trust Scrublet over CMO here.**
-       Both methods agree these three clusters are almost entirely doublets: CMO hashing calls 66-77% doublet, Scrublet independently calls 83-99% doublet.
+    1. **Clusters {_dd_list} are pure doublet clusters, trust Scrublet over CMO here.**
+       Both methods agree these {len(_dd_sorted)} clusters are almost entirely doublets: CMO hashing calls {_cmo_lo:.1f}-{_cmo_hi:.1f}% doublet, Scrublet independently calls {_scrub_lo:.1f}-{_scrub_hi:.1f}% doublet.
 
-    2. **Cluster 8's doublet calls are genuine confounding, not just noise.**
-       `doublet_pct_forest_plot` shows cluster 8 needs a far stricter threshold than well-behaved clusters to clear its doublets, staying well above the random (binomial) expectation across most of the quantile sweep. `n_pos_distribution_vs_null` confirms this directly: cluster 8's distribution of "number of positive CMOs" has substantially more mass at 2 or more than pure chance would produce, Binomial(n=25, p=0.05), unlike cluster 0 (a well-behaved cluster), which tracks close to or below the null. This looks like CMO hashing's structural blindness to same-CMO, same-sample, doublets rather than a tunable threshold problem, so we drop these clusters wholesale rather than keep their CMO-labeled singlets.
+    2. **Cluster {representative_doublet_cluster}'s doublet calls are genuine confounding, not just noise.**
+       `doublet_pct_forest_plot` shows cluster {representative_doublet_cluster} needs a far stricter threshold than well-behaved clusters to clear its doublets, staying well above the random (binomial) expectation across most of the quantile sweep. `n_pos_distribution_vs_null` confirms this directly: cluster {representative_doublet_cluster}'s distribution of "number of positive CMOs" has substantially more mass at 2 or more than pure chance would produce, Binomial(n=25, p=0.05), unlike cluster {representative_well_behaved_cluster} (a well-behaved cluster), which tracks close to or below the null. This looks like CMO hashing's structural blindness to same-CMO, same-sample, doublets rather than a tunable threshold problem, so we drop these clusters wholesale rather than keep their CMO-labeled singlets.
     """)
     return
 
 
 @app.cell(hide_code=True)
-def high_mito_investigation_intro(mo):
-    mo.md(r"""
+def high_mito_investigation_intro(
+    adata_flt,
+    doublet_dominated_clusters,
+    high_mito_clusters,
+    mo,
+):
+    _median_by_cluster = adata_flt.obs.groupby("leiden", observed=True)["pct_counts_mt"].median()
+    _lowest_clusters = [c for c in _median_by_cluster.index if c not in high_mito_clusters and c not in doublet_dominated_clusters]
+
+    _elevated_lo, _elevated_hi = _median_by_cluster.loc[high_mito_clusters].agg(["min", "max"])
+    _lowest_lo, _lowest_hi = _median_by_cluster.loc[_lowest_clusters].agg(["min", "max"])
+    _doublet_lo, _doublet_hi = _median_by_cluster.loc[doublet_dominated_clusters].agg(["min", "max"])
+
+    _elevated_list = ", ".join(f"**{c}**" for c in high_mito_clusters)
+
+    mo.md(f"""
     ## High mito-content cluster investigation
 
-    Clusters 2, 6, 7, and 10 show moderately elevated %mito (15-18% median) relative to the rest of the dataset (4-9% in the lowest clusters, 11-14% in the doublet-dominated clusters). This section asks whether that elevation reflects a stress response or dying/damaged nuclei, or genuine biological variation across real, distinct cell types.
+    Clusters {_elevated_list} show moderately elevated %mito ({_elevated_lo:.0f}-{_elevated_hi:.0f}% median) relative to the rest of the dataset ({_lowest_lo:.0f}-{_lowest_hi:.0f}% in the lowest clusters, {_doublet_lo:.0f}-{_doublet_hi:.0f}% in the doublet-dominated clusters). This section asks whether that elevation reflects a stress response or dying/damaged nuclei, or genuine biological variation across real, distinct cell types.
     """)
     return
 
 
 @app.cell
-def high_mito_marker_comparison(adata_flt, leiden_computed, mo, pd, sc):
+def high_mito_marker_comparison(
+    adata_flt,
+    high_mito_clusters,
+    leiden_computed,
+    mo,
+    pd,
+    sc,
+):
     leiden_computed  # ran after leiden clustering
+    high_mito_clusters  # ran after the moderately mito-elevated clusters were identified
 
-    # Clusters 2, 6, 7, and 10 are the moderately mito-elevated ones (see
+    # high_mito_clusters are the moderately mito-elevated ones (see
     # high_mito_investigation_intro). A stress-response or dying-nuclei
     # explanation predicts their top marker genes should be dominated by
     # mitochondrially-encoded genes plus a heat-shock/ER-stress chaperone
     # signature, rather than specific biology.
-    _high_mito_clusters = ["2", "6", "7", "10"]
     _marker_view = adata_flt.copy()
     sc.tl.rank_genes_groups(
-        _marker_view, groupby="leiden", groups=_high_mito_clusters, reference="rest",
+        _marker_view, groupby="leiden", groups=high_mito_clusters, reference="rest",
         method="wilcoxon", layer="pflog", use_raw=False,
     )
 
     _top_n = 15
     _marker_dfs = {}
-    for _cl in _high_mito_clusters:
+    for _cl in high_mito_clusters:
         _df = sc.get.rank_genes_groups_df(_marker_view, group=_cl).reset_index(drop=True)
         _df["gene_symbol"] = _df["names"].map(adata_flt.var["gene_symbol"])
         _df["rank"] = _df.index + 1
@@ -1969,6 +2100,7 @@ def high_mito_marker_comparison(adata_flt, leiden_computed, mo, pd, sc):
 def high_mito_stress_score_by_cluster(
     adata_flt,
     alt,
+    high_mito_clusters,
     high_mito_stress_genes,
     np,
     okabe_ito_palette,
@@ -1976,11 +2108,12 @@ def high_mito_stress_score_by_cluster(
     sc,
 ):
     high_mito_stress_genes  # ran after the mito/heat-shock/ER-stress gene list was defined
+    high_mito_clusters  # ran after the moderately mito-elevated clusters were identified
 
     # Module score (sc.tl.score_genes) over the mito-encoded and heat-shock/ER-stress
     # genes, rather than looking at each gene individually: a per-cell summary of
     # how strongly the whole stress signature is expressed, then compared across
-    # all clusters (not just the four moderately mito-elevated ones) so the
+    # all clusters (not just the moderately mito-elevated ones) so the
     # comparison has proper context.
     _stress_gene_ids = adata_flt.var.index[adata_flt.var["gene_symbol"].isin(high_mito_stress_genes)]
 
@@ -1989,10 +2122,9 @@ def high_mito_stress_score_by_cluster(
         use_raw=False, layer="pflog", random_state=0,
     )
 
-    _high_mito_clusters = ["2", "6", "7", "10"]
     _cluster_order = sorted(adata_flt.obs["leiden"].cat.categories, key=int)
     _plot_df = adata_flt.obs[["leiden", "mito_stress_score"]].copy()
-    _plot_df["group"] = np.where(_plot_df["leiden"].isin(_high_mito_clusters), "Elevated mito cluster", "Other cluster")
+    _plot_df["group"] = np.where(_plot_df["leiden"].isin(high_mito_clusters), "Elevated mito cluster", "Other cluster")
 
     _group_colors = {"Elevated mito cluster": okabe_ito_palette[8], "Other cluster": okabe_ito_palette[0]}
 
@@ -2019,12 +2151,14 @@ def high_mito_stress_score_by_cluster(
 def high_mito_density_comparison(
     adata_flt,
     alt,
+    high_mito_clusters,
     leiden_computed,
     np,
     okabe_ito_palette,
     pd,
 ):
     leiden_computed  # ran after leiden clustering
+    high_mito_clusters  # ran after the moderately mito-elevated clusters were identified
 
     # Density shape check: is the elevated %mito in these clusters a tight,
     # separate mode (consistent with a distinct dying/stressed population), or
@@ -2032,12 +2166,14 @@ def high_mito_density_comparison(
     # (consistent with ordinary biological variation)?
     from scipy.stats import gaussian_kde as _gaussian_kde_hm
 
-    _high_mito_mask = adata_flt.obs["leiden"].isin(["2", "6", "7", "10"]).to_numpy()
+    _high_mito_mask = adata_flt.obs["leiden"].isin(high_mito_clusters).to_numpy()
     _high_mito_vals = adata_flt.obs.loc[_high_mito_mask, "pct_counts_mt"].to_numpy()
     _rest_vals = adata_flt.obs.loc[~_high_mito_mask, "pct_counts_mt"].to_numpy()
 
     _max_mito = adata_flt.obs["pct_counts_mt"].max()
     _grid = np.linspace(0, _max_mito, 200)
+
+    _elevated_label = f"Clusters {', '.join(high_mito_clusters)}"
 
     _density_df = pd.DataFrame({
         "pct_mito": np.tile(_grid, 2),
@@ -2045,10 +2181,10 @@ def high_mito_density_comparison(
             _gaussian_kde_hm(_high_mito_vals)(_grid),
             _gaussian_kde_hm(_rest_vals)(_grid),
         ]),
-        "group": ["Clusters 2, 6, 7, 10"] * 200 + ["Rest of dataset"] * 200,
+        "group": [_elevated_label] * 200 + ["Rest of dataset"] * 200,
     })
 
-    _group_colors = {"Clusters 2, 6, 7, 10": okabe_ito_palette[8], "Rest of dataset": okabe_ito_palette[0]}
+    _group_colors = {_elevated_label: okabe_ito_palette[8], "Rest of dataset": okabe_ito_palette[0]}
 
     _chart = alt.Chart(_density_df).mark_line(opacity=0.7, interpolate="monotone").encode(
         x=alt.X("pct_mito:Q", title="% mitochondrial counts"),
@@ -2072,13 +2208,13 @@ def high_mito_investigation_conclusion(mo):
     mo.md(r"""
     ### High-mito investigation: conclusion
 
-    `high_mito_density_comparison` shows clusters 2, 6, 7, and 10 as a shifted, heavily overlapping tail of the same overall %mito distribution, not a distinct separate mode: about a quarter of the "rest of dataset" barcodes sit above these clusters' median, and about a quarter of these clusters' own barcodes sit below the rest's median. This is not the shape a genuinely distinct dying/stressed population would produce.
+    `high_mito_density_comparison` shows clusters 4, 6, 7, 8, and 12 as a shifted, heavily overlapping tail of the same overall %mito distribution, not a distinct separate mode: about a quarter (24.2%) of the "rest of dataset" barcodes sit above these clusters' median, and about a quarter (28.1%) of these clusters' own barcodes sit below the rest's median. This is not the shape a genuinely distinct dying/stressed population would produce.
 
-    `high_mito_marker_comparison` backs this up at the gene level. None of the four clusters show the combined mito-encoded-plus-heat-shock-plus-ribosomal signature that a stress response or dying nuclei would produce. Each does show one narrow, explainable overlap: cluster 2 has mildly elevated mitochondrial genes (but depleted heat-shock/ER genes); cluster 6 has elevated HSP90AB1/RPLP1 alongside cell-cycle markers (CENPF, MKI67, MCM4, DTL), consistent with the chaperone and ribosome demand of active proliferation rather than damage; cluster 7 has elevated ER chaperones (HSPA5, HSP90B1, CANX) alongside ECM/secretory markers (COL11A1, HAPLN1, KDR), consistent with the baseline protein-folding load of a secretory cell type; cluster 10 shows no overlap with any of these genes at all, with neuronal/axon-guidance markers (UNC5C, ROBO2, PCDH7) at the top.
+    `high_mito_marker_comparison` backs this up at the gene level, and shows five distinct stories rather than one shared signature. Cluster 4 has elevated chaperone/ribosomal genes (HSP90AB1, HSPA5, RPLP1 all rank in the top ~150 of 62,757, positive logFC) alongside cell-cycle markers (DTL, CENPF, MKI67, MCM4) at the top, but its mitochondrial genes are actually depleted, not elevated, consistent with the chaperone and ribosome demand of active proliferation rather than damage. Cluster 6 has genuinely elevated mitochondrial genes (every MT- gene tested ranks in the top ~400, logFC +0.46 to +0.81) alongside angiogenic/endothelial markers (FLT1, ESM1), but its heat-shock/ER chaperone genes are depleted, consistent with real, elevated mitochondrial/metabolic activity rather than a stress response. Cluster 7 has elevated ER chaperones (HSP90B1, HSPA5, CANX) but not mitochondrial genes, alongside endothelial/ECM-secretory markers (KDR, NRP2, HAPLN1, COL11A1), consistent with the baseline protein-folding load of a secretory cell type. Cluster 8 shows no elevation in either the mitochondrial or the heat-shock/ER gene set at all (all rank near the bottom with negative logFC), so its mito elevation (14.0% median, the lowest of the five) isn't explained by anything tested here; its top markers (MECOM, FLI1, DACH1) don't point to an obvious alternative explanation either. Cluster 12 also shows no overlap with any of these genes, with neuronal/axon-guidance and migratory markers (KIF26B, UNC5C, ROBO2, PCDH7, FN1, HMCN1) at the top, matching the tip-cell-like transitional population described elsewhere in this notebook.
 
-    `high_mito_stress_score_by_cluster` looks at the combined mito/heat-shock/ER-stress module score across every cluster, not just these four, and finds no clean separation: the doublet-dominated clusters (3, 4, 8) score just as high or higher than the elevated-mito clusters (2.4-2.5 vs. 2.3-2.4), most other clusters sit in a similar mid-to-high band, and only cluster 0 stands out as clearly lower (1.0). This looks like a gradient across the dataset rather than a distinct stressed/dying subpopulation.
+    `high_mito_stress_score_by_cluster` looks at the combined mito/heat-shock/ER-stress module score across every cluster, not just these five, and finds no clean separation: the doublet-dominated clusters (1, 2, 5, 9, 11) score just as high or higher than the elevated-mito clusters (2.28-2.58 vs. 2.09-2.38), most other clusters sit in a similar mid-to-high band, and only cluster 0 stands out as clearly lower (1.04). This looks like a gradient across the dataset rather than a distinct stressed/dying subpopulation.
 
-    **Interpretation:** the moderate %mito elevation in these four clusters reflects genuine biological variation across distinct, real cell types, not a stress response or dying nuclei. No additional cluster-level mito exclusion is applied.
+    **Interpretation:** the moderate %mito elevation in these five clusters reflects genuine, and genuinely varied, biological variation, proliferation demand, real mitochondrial/metabolic activity, secretory ER load, or in cluster 8's case no clear explanation at all, rather than a shared stress response or dying nuclei. No additional cluster-level mito exclusion is applied.
     """)
     return
 
@@ -2346,6 +2482,12 @@ def strict_qc_cascade(
     _doublet_cluster_mask = leiden_doublet_summary["pct_cmo_doublet"].gt(50) & leiden_doublet_summary["pct_scrublet_doublet"].gt(50)
     doublet_dominated_clusters = leiden_doublet_summary.index[_doublet_cluster_mask].tolist()
 
+    # Picked programmatically (not hardcoded) so the write-up and charts referencing
+    # "the" doublet cluster / "the" well-behaved cluster stay correct even if Leiden
+    # renumbers clusters on a future re-run.
+    representative_doublet_cluster = leiden_doublet_summary.loc[doublet_dominated_clusters, "pct_cmo_doublet"].idxmax()
+    representative_well_behaved_cluster = leiden_doublet_summary["pct_cmo_doublet"].idxmin()
+
     _ok = _run_strict_qc(adata_flt, doublet_dominated_clusters)
 
     # Cascade breakdown, like mask_filter_cells, steps ordered from least to most
@@ -2386,7 +2528,12 @@ def strict_qc_cascade(
 
     **Net:** {int(pass_strict_qc_mask.sum()):,} of {_n_total:,} barcodes ({pass_strict_qc_mask.sum() / _n_total:.1%}) survive strict QC (`pass_strict_qc`).
     """)
-    return doublet_dominated_clusters, strict_qc_computed
+    return (
+        doublet_dominated_clusters,
+        representative_doublet_cluster,
+        representative_well_behaved_cluster,
+        strict_qc_computed,
+    )
 
 
 @app.cell
@@ -2540,6 +2687,7 @@ def _(mo):
 @app.cell(hide_code=True)
 def write_qc_annotations_tsv(
     adata_flt,
+    ch2_outdir_root,
     project_root,
     rescue_computed,
     strict_qc_computed,
@@ -2547,7 +2695,7 @@ def write_qc_annotations_tsv(
     strict_qc_computed  # ran after strict QC flags were computed
     rescue_computed  # ran after rescue tags were computed
 
-    _outfile = project_root / "results/channel2/adata_flt_qc_annotations.tsv"
+    _outfile = ch2_outdir_root / "adata_flt_qc_annotations.tsv"
     _outfile.parent.mkdir(parents=True, exist_ok=True)
     adata_flt.obs.to_csv(_outfile, sep="\t")
 
@@ -2557,23 +2705,53 @@ def write_qc_annotations_tsv(
 
 
 @app.cell
-def filtering_strategy_conclusion(mo):
-    mo.md(r"""
+def filtering_strategy_conclusion(
+    adata_flt,
+    doublet_dominated_clusters,
+    high_mito_clusters,
+    mo,
+    rescue_tag_match_summary,
+):
+    _n_lenient = adata_flt.n_obs
+    _n_scrublet = int(adata_flt.obs["scrublet_predicted_doublet"].sum())
+    _n_cmo = int((adata_flt.obs["cmo_status_scanpy"] == "Doublet").sum())
+    _n_cluster = int(adata_flt.obs["leiden"].isin(doublet_dominated_clusters).sum())
+    _n_pass = int(adata_flt.obs["pass_strict_qc"].sum())
+    _pct_pass = _n_pass / _n_lenient
+
+    _elevated_list = ", ".join(high_mito_clusters)
+
+    _qc_pass_obs = adata_flt.obs.loc[adata_flt.obs["pass_strict_qc"]]
+    _n_rescued_by_tp = (
+        _qc_pass_obs.loc[_qc_pass_obs["cmo_status_scanpy"] == "Negative", "rescued_cmo_tag"]
+        .value_counts()
+    )
+
+    _fewest_rescue_tp = _n_rescued_by_tp.idxmin()
+    _fewest_rescue_n = int(_n_rescued_by_tp.min())
+    _rescue_lo, _rescue_hi = int(_n_rescued_by_tp.min()), int(_n_rescued_by_tp.max())
+
+    _match_by_tp = rescue_tag_match_summary.set_index("rescued_tag")["pct_match"]
+    _fewest_tp_match = _match_by_tp.loc[_fewest_rescue_tp]
+    _other_match = _match_by_tp.drop(index=_fewest_rescue_tp)
+    _other_lo, _other_hi = _other_match.min(), _other_match.max()
+
+    mo.md(f"""
     ### Filtering strategy: conclusions
 
-    Starting from 30,147 barcodes surviving the lenient QC filter (which already includes an upstream mito cutoff, median + 2.5 MADs, applied pre-clustering in `mask_filter_cells`), strict QC drops barcodes for one of three reasons: Scrublet-predicted doublets (8,674), CMO-hashing Doublet calls (8,396), or doublet-dominated clusters (7,498), leaving **18,803 of 30,147 barcodes (62.4%)** as `pass_strict_qc`. No additional cluster- or cell-level mito exclusion is applied at this stage: the moderately mito-elevated clusters (2, 6, 7, 10) show no stress/dying-nuclei signature (density shape, marker genes, and module score all point to genuine biological variation, not debris, see `high_mito_investigation_conclusion`), so they're kept rather than excluded.
+    Starting from {_n_lenient:,} barcodes surviving the lenient QC filter (which already includes an upstream mito cutoff, median + 2.5 MADs, applied pre-clustering in `mask_filter_cells`), strict QC drops barcodes for one of three reasons: Scrublet-predicted doublets ({_n_scrublet:,}), CMO-hashing Doublet calls ({_n_cmo:,}), or doublet-dominated clusters ({_n_cluster:,}), leaving **{_n_pass:,} of {_n_lenient:,} barcodes ({_pct_pass:.1%})** as `pass_strict_qc`. No additional cluster- or cell-level mito exclusion is applied at this stage: the moderately mito-elevated clusters ({_elevated_list}) show no stress/dying-nuclei signature (density shape, marker genes, and module score all point to genuine biological variation, not debris, see `high_mito_investigation_conclusion`), so they're kept rather than excluded.
 
-    Among those survivors, CMO-hashing "Negative" barcodes are rescued to their cluster's consensus timepoint rather than dropped, contributing 181 to 592 rescued barcodes per timepoint. d3 gets the fewest (181), a knock-on effect of d3 also having the fewest confidently-tagged singlets overall, so fewer clusters end up with d3 as their consensus timepoint to rescue negatives into. That's a separate question from how *accurate* those rescues are: `negative_tag_rescue_conclusion` shows d3 rescues are in fact the most reliable of any timepoint (91.3% match rate vs. 32-45% for the others), precisely because d3's weaker CMO recovery means its true cells are disproportionately likely to end up "Negative" rather than negatives being a random mix. The resulting `rescued_cmo_tag` is what downstream RNA and ATAC analyses use as each barcode's timepoint label.
+    Among those survivors, CMO-hashing "Negative" barcodes are rescued to their cluster's consensus timepoint rather than dropped, contributing {_rescue_lo:,} to {_rescue_hi:,} rescued barcodes per timepoint. {_fewest_rescue_tp} gets the fewest ({_fewest_rescue_n:,}), a knock-on effect of {_fewest_rescue_tp} also having the fewest confidently-tagged singlets overall, so fewer clusters end up with {_fewest_rescue_tp} as their consensus timepoint to rescue negatives into. That's a separate question from how *accurate* those rescues are: `negative_tag_rescue_conclusion` shows {_fewest_rescue_tp} rescues are in fact the most reliable of any timepoint ({_fewest_tp_match:.1f}% match rate vs. {_other_lo:.0f}-{_other_hi:.0f}% for the others), precisely because {_fewest_rescue_tp}'s weaker CMO recovery means its true cells are disproportionately likely to end up "Negative" rather than negatives being a random mix. The resulting `rescued_cmo_tag` is what downstream RNA and ATAC analyses use as each barcode's timepoint label.
     """)
     return
 
 
 @app.cell(hide_code=True)
-def _(mo):
+def cluster12_intro(mo):
     mo.md(r"""
-    # Extra: Cluster 10 investigation
+    # Extra: Cluster 12 investigation
 
-    `cluster_tag_mismatch_check` above flags cluster 10 for a 23.7% singlet/cluster-consensus mismatch rate, well above most other clusters despite sitting below the 50% doublet cutoff for both Scrublet and CMO hashing. This section digs into whether that mismatch reflects genuine mixed-timepoint biology (a d3/d4 transition state) or a technical/doublet problem, and whether the resulting population is worth keeping.
+    `cluster_tag_mismatch_check` above flags cluster 12 for a 23.8% singlet/cluster-consensus mismatch rate, well above most other clusters despite sitting below the 50% doublet cutoff for both Scrublet and CMO hashing. This section digs into whether that mismatch reflects genuine mixed-timepoint biology (a d3/d4 transition state) or a technical/doublet problem, and whether the resulting population is worth keeping.
     """)
     return
 
@@ -2620,17 +2798,17 @@ def cluster_tag_mismatch_check(
 
 
 @app.cell
-def cluster10_investigation_intro(mo):
+def cluster12_investigation_intro(mo):
     mo.md(r"""
-    ### Cluster 10: doublet or transition state?
+    ### Cluster 12: doublet or transition state?
 
-    Cluster 10 sits below the 50% doublet cutoff for both Scrublet and CMO hashing, so it survives strict QC, but its 23.7% singlet/cluster-consensus mismatch rate is unusually high. If that mismatch were a doublet artifact, we'd expect elevated %mito and doublet score alongside a genuinely mixed CMO-status composition; if it's a real transition state, the singlets should skew toward two adjacent timepoints (d3/d4) rather than being scattered randomly, and QC metrics should stay unremarkable.
+    Cluster 12 sits below the 50% doublet cutoff for both Scrublet and CMO hashing, so it survives strict QC, but its 23.8% singlet/cluster-consensus mismatch rate is unusually high. If that mismatch were a doublet artifact, we'd expect elevated %mito and doublet score alongside a genuinely mixed CMO-status composition; if it's a real transition state, the singlets should skew toward two adjacent timepoints (d3/d4) rather than being scattered randomly, and QC metrics should stay unremarkable.
     """)
     return
 
 
 @app.cell(hide_code=True)
-def cluster10_investigation(
+def cluster12_investigation(
     adata_flt,
     alt,
     cmo_assignment_computed,
@@ -2641,13 +2819,13 @@ def cluster10_investigation(
 ):
     cmo_assignment_computed  # ran after CMO tags were assigned
 
-    # See cluster10_investigation_intro above for the interpretation.
-    _mask10 = (adata_flt.obs["leiden"] == "10").to_numpy()
-    _sub10 = adata_flt.obs.loc[_mask10]
+    # See cluster12_investigation_intro above for the interpretation.
+    _mask12 = (adata_flt.obs["leiden"] == "12").to_numpy()
+    _sub12 = adata_flt.obs.loc[_mask12]
 
     _status_order = ["Singlet", "Doublet", "Negative"]
     _status_colors = {"Singlet": okabe_ito_palette[3], "Doublet": okabe_ito_palette[8], "Negative": okabe_ito_palette[0]}
-    _status_counts = _sub10["cmo_status_scanpy"].value_counts().reindex(_status_order).reset_index()
+    _status_counts = _sub12["cmo_status_scanpy"].value_counts().reindex(_status_order).reset_index()
     _status_counts.columns = ["cmo_status", "n_barcodes"]
 
     _status_chart = alt.Chart(_status_counts).mark_bar().encode(
@@ -2658,11 +2836,11 @@ def cluster10_investigation(
             scale=alt.Scale(domain=_status_order, range=[_status_colors[s] for s in _status_order]),
             legend=None,
         ),
-    ).properties(title="Cluster 10: CMO status", width=340, height=280).configure_view(strokeWidth=0)
+    ).properties(title="Cluster 12: CMO status", width=340, height=280).configure_view(strokeWidth=0)
 
     _timepoint_order = ["d0", "d1", "d2", "d3", "d4"]
     _timepoint_counts = (
-        _sub10.loc[_sub10["cmo_status_scanpy"] == "Singlet", "timepoint_scanpy"]
+        _sub12.loc[_sub12["cmo_status_scanpy"] == "Singlet", "timepoint_scanpy"]
         .value_counts().reindex(_timepoint_order).fillna(0).astype(int).reset_index()
     )
     _timepoint_counts.columns = ["timepoint", "n_barcodes"]
@@ -2675,7 +2853,7 @@ def cluster10_investigation(
             scale=alt.Scale(domain=_timepoint_order, range=[ec_diff_palette[t] for t in _timepoint_order]),
             legend=None,
         ),
-    ).properties(title="Cluster 10 singlets: timepoint composition", width=340, height=280).configure_view(strokeWidth=0)
+    ).properties(title="Cluster 12 singlets: timepoint composition", width=340, height=280).configure_view(strokeWidth=0)
 
     def _tight_row(*items):
         # mo.hstack with widths=None adds no wrapper/flex styling around children,
@@ -2687,13 +2865,13 @@ def cluster10_investigation(
         return mo.Html(f'<div style="display:flex; justify-content:flex-start; gap:1rem;">{_items_html}</div>')
 
     _qc_table = pd.DataFrame({
-        "cluster_10": _sub10[["total_counts", "n_genes_by_counts", "pct_counts_mt", "scrublet_doublet_score"]].median(),
-        "rest_of_dataset": adata_flt.obs.loc[~_mask10, ["total_counts", "n_genes_by_counts", "pct_counts_mt", "scrublet_doublet_score"]].median(),
+        "cluster_12": _sub12[["total_counts", "n_genes_by_counts", "pct_counts_mt", "scrublet_doublet_score"]].median(),
+        "rest_of_dataset": adata_flt.obs.loc[~_mask12, ["total_counts", "n_genes_by_counts", "pct_counts_mt", "scrublet_doublet_score"]].median(),
     }).round(2)
 
     mo.vstack([
         _tight_row(_status_chart, _timepoint_chart),
-        mo.md(f"**Cluster 10 median QC vs. rest of dataset:**\n\n{_qc_table.to_markdown()}"),
+        mo.md(f"**Cluster 12 median QC vs. rest of dataset:**\n\n{_qc_table.to_markdown()}"),
     ])
     return
 
@@ -2709,45 +2887,45 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def cluster10_marker_genes(adata_flt, sc, strict_qc_computed):
+def cluster12_marker_genes(adata_flt, sc, strict_qc_computed):
     strict_qc_computed  # ran after strict QC flags were computed
 
     # See the markdown above for the interpretation.
     _qc_view = adata_flt[adata_flt.obs["pass_strict_qc"]].copy()
-    sc.tl.rank_genes_groups(_qc_view, groupby="leiden", groups=["10"], reference="rest", method="wilcoxon", layer="pflog", use_raw=False)
+    sc.tl.rank_genes_groups(_qc_view, groupby="leiden", groups=["12"], reference="rest", method="wilcoxon", layer="pflog", use_raw=False)
 
-    cluster10_markers = sc.get.rank_genes_groups_df(_qc_view, group="10")
-    cluster10_markers["gene_symbol"] = cluster10_markers["names"].map(adata_flt.var["gene_symbol"])
-    cluster10_markers.head(25)
+    cluster12_markers = sc.get.rank_genes_groups_df(_qc_view, group="12")
+    cluster12_markers["gene_symbol"] = cluster12_markers["names"].map(adata_flt.var["gene_symbol"])
+    cluster12_markers.head(25)
     return
 
 
 @app.cell(hide_code=True)
-def cluster10_conclusion(mo):
+def cluster12_conclusion(mo):
     mo.md(r"""
-    ## Cluster 10: a lagging, tip-cell-like transitional population (reproduces in channel1)
+    ## Cluster 12: a lagging, tip-cell-like transitional population
 
-    Cluster 10 (500 cells) is CMO-hashing-labeled mostly d3/d4 (300 d3, 90 d4 among its 393 singlets, 76.3%/22.9%), almost identical proportions to the channel1 analog (previously cluster 4: 297 d3, 94 d4, 74.1%/23.4%). Its own-tag-vs-cluster-consensus mismatch rate is 23.7%, in line with its non-d3 singlet fraction, and its QC metrics remain unremarkable relative to a real cell type: %mito 16.1% vs. 12.5% rest-of-dataset, a mild elevation consistent with the moderate, biology-driven variation described in `high_mito_investigation_conclusion` (cluster 10 is one of the four clusters flagged there), well under the levels seen in the doublet-dominated clusters.
+    Cluster 12 (496 cells) is CMO-hashing-labeled mostly d3/d4 (298 d3, 90 d4 among its 391 singlets, 76.2%/23.0%). Its own-tag-vs-cluster-consensus mismatch rate is 23.8%, in line with its non-d3 singlet fraction, and its QC metrics remain unremarkable relative to a real cell type: %mito 16.1% vs. 12.5% rest-of-dataset, a mild elevation consistent with the moderate, biology-driven variation described in `high_mito_investigation_conclusion` (cluster 12 is one of the clusters flagged there), well under the levels seen in the doublet-dominated clusters.
 
-    **Marker genes** (`cluster10_marker_genes`, Wilcoxon vs. rest, on the `pflog` layer) reproduce essentially the same signature found in channel1: axon-guidance/cell-motility genes (`KIF26B`, `UNC5C`, `ROBO2`, `SLIT3`, `SEMA6D`, `NRP2`, the last a classic endothelial tip-cell marker), plus adhesion/ECM genes (`PCDH7`, `FN1`, `ALCAM`, `HMCN1`) and progenitor-associated genes (`MLLT3`, `CDK6`, `HMGA2`).
+    **Marker genes** (`cluster12_marker_genes`, Wilcoxon vs. rest, on the `pflog` layer) show the same signature previously identified for this population (and its analog in channel1): axon-guidance/cell-motility genes (`KIF26B`, `UNC5C`, `ROBO2`, `SLIT3`, `SEMA6D`, `NRP2`, the last a classic endothelial tip-cell marker), plus adhesion/ECM genes (`PCDH7`, `FN1`, `ALCAM`, `HMCN1`) and progenitor-associated genes (`MLLT3`, `CDK6`, `HMGA2`).
 
-    **Interpretation:** this population reproducing almost identically (composition, QC profile, and marker genes) in a completely independent sample (channel1, a different 10x lane) is strong evidence this is real, robust biology rather than a normalization- or channel-specific artifact: a migratory, tip-cell-like subpopulation that transcriptionally lags the bulk d3/d4 differentiation trajectory. Not excluded; kept as-is.
+    **Interpretation:** this population reproducing almost identically (composition, QC profile, and marker genes) across independent samples and re-clustering runs is strong evidence this is real, robust biology rather than a normalization- or channel-specific artifact: a migratory, tip-cell-like subpopulation that transcriptionally lags the bulk d3/d4 differentiation trajectory. Not excluded; kept as-is.
     """)
     return
 
 
 @app.cell
-def cluster6_investigation_intro(mo):
+def cluster4_investigation_intro(mo):
     mo.md(r"""
-    ### Cluster 6: doublet or multi-timepoint progenitor state?
+    ### Cluster 4: doublet or multi-timepoint progenitor state?
 
-    Cluster 6 sits below the 50% doublet cutoff for both Scrublet and CMO hashing, so it survives strict QC, but its 43.8% singlet/cluster-consensus mismatch rate is the highest of any cluster not already excluded as doublet-dominated. If that mismatch were a doublet artifact, we'd expect elevated %mito and doublet score alongside a genuinely mixed CMO-status composition; if it's a real biological state that simply persists across several timepoints rather than being tied to one, the singlets should show a broad, structured timepoint spread rather than being scattered randomly, and QC metrics should stay unremarkable.
+    Cluster 4 sits below the 50% doublet cutoff for both Scrublet and CMO hashing, so it survives strict QC, but its 47.3% singlet/cluster-consensus mismatch rate is the highest of any cluster not already excluded as doublet-dominated. If that mismatch were a doublet artifact, we'd expect elevated %mito and doublet score alongside a genuinely mixed CMO-status composition; if it's a real biological state that simply persists across several timepoints rather than being tied to one, the singlets should show a broad, structured timepoint spread rather than being scattered randomly, and QC metrics should stay unremarkable.
     """)
     return
 
 
 @app.cell
-def cluster6_investigation(
+def cluster4_investigation(
     adata_flt,
     alt,
     cmo_assignment_computed,
@@ -2758,13 +2936,13 @@ def cluster6_investigation(
 ):
     cmo_assignment_computed  # ran after CMO tags were assigned
 
-    # See cluster6_investigation_intro above for the interpretation.
-    _mask6 = (adata_flt.obs["leiden"] == "6").to_numpy()
-    _sub6 = adata_flt.obs.loc[_mask6]
+    # See cluster4_investigation_intro above for the interpretation.
+    _mask4 = (adata_flt.obs["leiden"] == "4").to_numpy()
+    _sub4 = adata_flt.obs.loc[_mask4]
 
     _status_order = ["Singlet", "Doublet", "Negative"]
     _status_colors = {"Singlet": okabe_ito_palette[3], "Doublet": okabe_ito_palette[8], "Negative": okabe_ito_palette[0]}
-    _status_counts = _sub6["cmo_status_scanpy"].value_counts().reindex(_status_order).reset_index()
+    _status_counts = _sub4["cmo_status_scanpy"].value_counts().reindex(_status_order).reset_index()
     _status_counts.columns = ["cmo_status", "n_barcodes"]
 
     _status_chart = alt.Chart(_status_counts).mark_bar().encode(
@@ -2775,11 +2953,11 @@ def cluster6_investigation(
             scale=alt.Scale(domain=_status_order, range=[_status_colors[s] for s in _status_order]),
             legend=None,
         ),
-    ).properties(title="Cluster 6: CMO status", width=340, height=280).configure_view(strokeWidth=0)
+    ).properties(title="Cluster 4: CMO status", width=340, height=280).configure_view(strokeWidth=0)
 
     _timepoint_order = ["d0", "d1", "d2", "d3", "d4"]
     _timepoint_counts = (
-        _sub6.loc[_sub6["cmo_status_scanpy"] == "Singlet", "timepoint_scanpy"]
+        _sub4.loc[_sub4["cmo_status_scanpy"] == "Singlet", "timepoint_scanpy"]
         .value_counts().reindex(_timepoint_order).fillna(0).astype(int).reset_index()
     )
     _timepoint_counts.columns = ["timepoint", "n_barcodes"]
@@ -2792,7 +2970,7 @@ def cluster6_investigation(
             scale=alt.Scale(domain=_timepoint_order, range=[ec_diff_palette[t] for t in _timepoint_order]),
             legend=None,
         ),
-    ).properties(title="Cluster 6 singlets: timepoint composition", width=340, height=280).configure_view(strokeWidth=0)
+    ).properties(title="Cluster 4 singlets: timepoint composition", width=340, height=280).configure_view(strokeWidth=0)
 
     def _tight_row(*items):
         # mo.hstack with widths=None adds no wrapper/flex styling around children,
@@ -2804,51 +2982,51 @@ def cluster6_investigation(
         return mo.Html(f'<div style="display:flex; justify-content:flex-start; gap:1rem;">{_items_html}</div>')
 
     _qc_table = pd.DataFrame({
-        "cluster_6": _sub6[["total_counts", "n_genes_by_counts", "pct_counts_mt", "scrublet_doublet_score"]].median(),
-        "rest_of_dataset": adata_flt.obs.loc[~_mask6, ["total_counts", "n_genes_by_counts", "pct_counts_mt", "scrublet_doublet_score"]].median(),
+        "cluster_4": _sub4[["total_counts", "n_genes_by_counts", "pct_counts_mt", "scrublet_doublet_score"]].median(),
+        "rest_of_dataset": adata_flt.obs.loc[~_mask4, ["total_counts", "n_genes_by_counts", "pct_counts_mt", "scrublet_doublet_score"]].median(),
     }).round(2)
 
     mo.vstack([
         _tight_row(_status_chart, _timepoint_chart),
-        mo.md(f"**Cluster 6 median QC vs. rest of dataset:**\n\n{_qc_table.to_markdown()}"),
+        mo.md(f"**Cluster 4 median QC vs. rest of dataset:**\n\n{_qc_table.to_markdown()}"),
     ])
     return
 
 
 @app.cell
-def cluster6_marker_genes_intro(mo):
+def cluster4_marker_genes_intro(mo):
     mo.md(r"""
     ### Marker genes analysis
 
-    If cluster 6 is a real, distinct biological state rather than a doublet or QC artifact, it should have a coherent marker gene signature, restricted to QC-passing cells and computed on the `pflog` layer (PFlog-normalized), since `.X` is still raw counts.
+    If cluster 4 is a real, distinct biological state rather than a doublet or QC artifact, it should have a coherent marker gene signature, restricted to QC-passing cells and computed on the `pflog` layer (PFlog-normalized), since `.X` is still raw counts.
     """)
     return
 
 
 @app.cell
-def cluster6_marker_genes(adata_flt, sc, strict_qc_computed):
+def cluster4_marker_genes(adata_flt, sc, strict_qc_computed):
     strict_qc_computed  # ran after strict QC flags were computed
 
     # See the markdown above for the interpretation.
     _qc_view = adata_flt[adata_flt.obs["pass_strict_qc"]].copy()
-    sc.tl.rank_genes_groups(_qc_view, groupby="leiden", groups=["6"], reference="rest", method="wilcoxon", layer="pflog", use_raw=False)
+    sc.tl.rank_genes_groups(_qc_view, groupby="leiden", groups=["4"], reference="rest", method="wilcoxon", layer="pflog", use_raw=False)
 
-    cluster6_markers = sc.get.rank_genes_groups_df(_qc_view, group="6")
-    cluster6_markers["gene_symbol"] = cluster6_markers["names"].map(adata_flt.var["gene_symbol"])
-    cluster6_markers.head(25)
+    cluster4_markers = sc.get.rank_genes_groups_df(_qc_view, group="4")
+    cluster4_markers["gene_symbol"] = cluster4_markers["names"].map(adata_flt.var["gene_symbol"])
+    cluster4_markers.head(25)
     return
 
 
 @app.cell
-def cluster6_conclusion(mo):
+def cluster4_conclusion(mo):
     mo.md(r"""
-    ## Cluster 6: a proliferative progenitor state spanning early timepoints (not a doublet artifact)
+    ## Cluster 4: a proliferative progenitor state spanning early timepoints (not a doublet artifact)
 
-    Cluster 6 (697 cells) is CMO-hashing-labeled mostly d0 (313 of 557 singlets, 56.2%), with a long tail through d1 (114, 20.5%), d2 (91, 16.3%), d3 (34, 6.1%), and d4 (5, 0.9%), rather than the clean two-timepoint split seen in `cluster10_conclusion`. Its own-tag-vs-cluster-consensus mismatch rate of 43.8% is largely a mechanical consequence of that spread: with singlets that broadly distributed, the d0 plurality vote is a "majority" in name only, so a large fraction of non-d0 singlets necessarily register as mismatches. Its QC metrics argue against a doublet or debris explanation: Scrublet doublet score is *lower* than the rest of the dataset (0.072 vs. 0.165), not higher, and %mito is only mildly elevated (18.3% vs. 12.4%), consistent with the moderate, biology-driven variation described in `high_mito_investigation_conclusion` (cluster 6 is one of the four clusters flagged there). Total counts and genes-per-cell are somewhat lower than the rest of the dataset (1,821 vs. 2,759; 1,217 vs. 1,657), which doesn't fit a doublet profile either (doublets skew higher, not lower, on these metrics).
+    Cluster 4 (700 cells) is CMO-hashing-labeled mostly d0 (296 of 562 singlets, 52.7%), with a long tail through d1 (140, 24.9%), d2 (88, 15.7%), d3 (33, 5.9%), and d4 (5, 0.9%), rather than the clean two-timepoint split seen in `cluster12_conclusion`. Its own-tag-vs-cluster-consensus mismatch rate of 47.3% is largely a mechanical consequence of that spread: with singlets that broadly distributed, the d0 plurality vote is a "majority" in name only, so a large fraction of non-d0 singlets necessarily register as mismatches. Its QC metrics argue against a doublet or debris explanation: Scrublet doublet score is *lower* than the rest of the dataset (0.071 vs. 0.165), not higher, and %mito is only mildly elevated (18.0% vs. 12.4%), consistent with the moderate, biology-driven variation described in `high_mito_investigation_conclusion` (cluster 4 is one of the clusters flagged there). Total counts and genes-per-cell are somewhat lower than the rest of the dataset (1,837 vs. 2,764; 1,222 vs. 1,658), which doesn't fit a doublet profile either (doublets skew higher, not lower, on these metrics).
 
-    **Marker genes** (`cluster6_marker_genes`, Wilcoxon vs. rest, on the `pflog` layer) point to an actively proliferating, high-biosynthesis progenitor state: cell-cycle genes (`CENPF`, `DTL`, `NASP`, `H2AZ1`), pluripotency/progenitor markers (`L1TD1`, `CD24`, `NAP1L1`), and a cluster of chaperone (`HSP90AB1`, `HSP90AA1`, `HSPA8`, `HSPA5`, `HSPD1`) and ribosomal/translation genes (`RPLP1`, `RPL11`, `RPL19`, `RPL37`, `EIF3A`, `EEF1A1`, `NCL`, `PTMA`, `TKT`). This chaperone/ribosome load reads as the ordinary protein-folding and biosynthesis demand of rapid proliferation, the same interpretation `high_mito_marker_comparison` and `high_mito_investigation_conclusion` already reached for this cluster, not a stress or damage response.
+    **Marker genes** (`cluster4_marker_genes`, Wilcoxon vs. rest, on the `pflog` layer) point to an actively proliferating, high-biosynthesis progenitor state: cell-cycle genes (`CENPF`, `DTL`, `NASP`, `H2AZ1`), pluripotency/progenitor markers (`L1TD1`, `CD24`, `NAP1L1`), and a cluster of chaperone (`HSP90AB1`, `HSP90AA1`, `HSPA8`, `HSPA5`, `HSPD1`) and ribosomal/translation genes (`RPLP1`, `RPL11`, `RPL37`, `EIF3A`, `NCL`, `TKT`, `RPS6`, `RPS8`). This chaperone/ribosome load reads as the ordinary protein-folding and biosynthesis demand of rapid proliferation, the same interpretation `high_mito_marker_comparison` and `high_mito_investigation_conclusion` already reached for this cluster, not a stress or damage response.
 
-    **Interpretation:** cluster 6 looks like a genuine proliferative progenitor population present across several early timepoints (mostly d0-d2, tailing into d3/d4) rather than a doublet or technical artifact. Its high tag-mismatch rate is an expected consequence of a real multi-timepoint population being forced through a single-timepoint cluster-consensus vote, not evidence against it. Not excluded; kept as-is. One caveat worth flagging: `rescue_negative_tags` rescues this cluster's Negative barcodes to its d0 consensus tag, which is likely wrong for the ~44% of the cluster that isn't actually d0, a rescue-accuracy limitation specific to clusters with broad timepoint spread like this one.
+    **Interpretation:** cluster 4 looks like a genuine proliferative progenitor population present across several early timepoints (mostly d0-d2, tailing into d3/d4) rather than a doublet or technical artifact. Its high tag-mismatch rate is an expected consequence of a real multi-timepoint population being forced through a single-timepoint cluster-consensus vote, not evidence against it. Not excluded; kept as-is. One caveat worth flagging: `rescue_negative_tags` rescues this cluster's 74 Negative barcodes to its d0 consensus tag; applying the cluster's own 47.3% singlet mismatch rate as an estimate, roughly 35 of those 74 are likely mislabeled, a rescue-accuracy limitation specific to clusters with broad timepoint spread like this one.
     """)
     return
 
@@ -2878,8 +3056,8 @@ def rna_adata_post_filter(
         _ncomps = 50
         _ncv = 2 * _ncomps + 1
         scclr.tl.pca(adata, n_comps=_ncomps, ncv=_ncv)
-        sc.pp.neighbors(adata)
-        sc.tl.leiden(adata, flavor="igraph", resolution=0.5, n_iterations=2)
+        sc.pp.neighbors(adata, random_state=0)
+        sc.tl.leiden(adata, flavor="igraph", resolution=0.5, n_iterations=2, random_state=0)
         sc.tl.umap(adata)
         return True
 
@@ -2981,16 +3159,6 @@ def old_vs_new_cluster_confusion_matrix(
     return
 
 
-@app.cell
-def post_filter_cluster_identity_notes(mo):
-    mo.md(r"""
-    **Known cluster identities carried across the two clusterings** (see `old_vs_new_cluster_confusion_matrix`):
-    - New cluster 9 = old cluster 10, the tip-cell-like endothelial transitional population (`cluster10_conclusion`).
-    - New cluster 3 = old cluster 6, the proliferative progenitor population (`cluster6_conclusion`).
-    """)
-    return
-
-
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
@@ -3024,10 +3192,10 @@ def atac_import_intro(mo):
 
 
 @app.cell
-def load_strict_qc_whitelist(pd, project_root):
+def load_strict_qc_whitelist(ch2_outdir_root, pd):
     # See atac_import_intro above.
     _qc_annotations = pd.read_csv(
-        project_root / "results/channel2/adata_flt_qc_annotations.tsv", sep="\t", index_col=0
+        ch2_outdir_root / "adata_flt_qc_annotations.tsv", sep="\t", index_col=0
     )
     assigned_cells = _qc_annotations.index[_qc_annotations["pass_strict_qc"]].to_list()
     len(assigned_cells)
@@ -3037,13 +3205,13 @@ def load_strict_qc_whitelist(pd, project_root):
 @app.cell
 def import_atac_fragments(
     assigned_cells,
+    ch2_data_root_path,
     chrom_dict,
     igvf_gencode_gtf_path,
-    project_root,
     snap,
 ):
     atac_adata = snap.pp.import_fragments(
-        project_root / "data/fragments/10x_5timepoints_channel2.fragments.tsv.gz",
+        ch2_data_root_path / "atac/fragments/IGVFFI3256WWXC.bed.gz",
         sorted_by_barcode=False,
         chrom_sizes=chrom_dict,
         whitelist=assigned_cells,
@@ -3415,6 +3583,31 @@ def ncount_atac_vs_rna_counts(
     ).properties(title="nCount_ATAC vs. total RNA counts", width=500, height=500)
 
     _ncount_chart
+    return
+
+
+@app.cell
+def saving_h5ad(
+    atac_adata,
+    atac_spectral_umap_leiden_computed,
+    ch2_outdir_root,
+    project_root,
+    rna_adata,
+    rna_adata_post_filter_computed,
+):
+    rna_adata_post_filter_computed  # ran after normalization, HVG, PCA, neighbors, leiden, and UMAP (RNA)
+    atac_spectral_umap_leiden_computed  # ran after spectral embedding, UMAP, KNN, and Leiden clustering (ATAC)
+
+    # Saving the RNA and ATAC anndata objects.
+    _rna_outfile = ch2_outdir_root / "rna_adata.h5ad"
+    _atac_outfile = ch2_outdir_root / "atac_adata.h5ad"
+    _rna_outfile.parent.mkdir(parents=True, exist_ok=True)
+
+    rna_adata.write_h5ad(_rna_outfile)
+    atac_adata.write_h5ad(_atac_outfile)
+
+    # Show only the paths relative to the repo, not the full local filesystem path
+    [_rna_outfile.relative_to(project_root), _atac_outfile.relative_to(project_root)]
     return
 
 
@@ -3850,7 +4043,14 @@ def ambient_rna_evidence_conclusion(mo):
 
     **Net:** the majority population's %mito noise is ambient contamination, well-characterized and already handled by DecontX where it matters. The four moderately-elevated clusters are real biology, already established independently by marker genes and now reinforced by their lack of a contamination signature. No filtering-strategy change follows from this either way: the ambient noise sits within clusters we're already keeping, and the real biology in the elevated clusters is exactly what `high_mito_investigation_conclusion` argued should not be filtered.
     """)
+    return
 
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    # Imports and palettes
+    """)
     return
 
 
@@ -3864,13 +4064,14 @@ def imports():
     import scanpy as sc
     import seaborn as sns
     from dotenv import find_dotenv, load_dotenv
+    from igvf_utils.connection import Connection
     from pathlib import Path
     from scipy.io import mmread
 
     # get the project root path using the '.env' file.
     _env_path = find_dotenv(usecwd=True)
     project_root = Path(_env_path).parent
-    return ad, alt, mmread, np, pd, plt, project_root, sc, sns
+    return Connection, Path, ad, alt, np, pd, plt, project_root, sc, sns
 
 
 @app.cell
