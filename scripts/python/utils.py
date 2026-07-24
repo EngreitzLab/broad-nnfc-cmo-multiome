@@ -234,6 +234,7 @@ def quantify_channel(
     threads: int,
     memory: str,
     temp_dir: Path | None,
+    strand: str = "forward",
 ) -> None:
     """
     Quantify CMO tags for one channel; skips if h5ad output already exists.
@@ -256,6 +257,7 @@ def quantify_channel(
         f"--output_dir {out} "
         f"--barcode_onlist {onlist} "
         f"--read_format {read_format} "
+        f"--strand {strand} "
         f"--threads {threads} "
         f"--memory {memory} "
         f"{tmp} "

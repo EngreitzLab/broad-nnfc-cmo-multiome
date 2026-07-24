@@ -140,6 +140,11 @@ def main() -> None:
         threads=args.threads,
         memory=args.memory,
         temp_dir=work / "tmp",
+        # d1_3 (CGAGATTC) and d3_3 (GAATCTCG) are reverse complements; under
+        # unstranded counting kallisto's canonical k-mers collapse them into one
+        # equivalence class and both drop to 0. Forward-strand counting keeps only
+        # the forward-orientation match, separating the pair (tags are non-palindromic).
+        strand="forward",
     )
 
 
