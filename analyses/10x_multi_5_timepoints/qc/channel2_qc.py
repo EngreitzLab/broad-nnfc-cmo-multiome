@@ -78,10 +78,10 @@ def _(mo):
 
 
 @app.cell
-def _(Connection, Path, project_root):
-    ch2_data_root_path = Path(project_root / "data/10X_miltiome_5_timepoints/channel2/")
+def igvf_data_download(Connection, Path, project_root):
+    ch2_data_root_path = Path(project_root / "data/10X_multiome_5_timepoints/channel2/")
 
-    ch2_outdir_root = Path(project_root /"results/10X_miltiome_5_timepoints/channel2")
+    ch2_outdir_root = Path(project_root /"results/10X_multiome_5_timepoints/channel2")
 
 
     # 1. Initialize the connection targeting the production portal
@@ -118,38 +118,18 @@ def load_gene_metadata_intro(mo):
     mo.md(r"""
     ## Loading gene metadata
 
-    The transcription start sites (TSSs) for the protein-coding genes annotated in GENCODE v43 were curated using the MANE annotations. The source file stores a 500bp window centered on each TSS (-250/+249); we collapse that down to the single-bp TSS position itself.
+    Per-gene metadata parsed directly from the GENCODE v43 GTF via `gtf_to_gene_metadata` (`scripts/python/utils.py`), covering all annotated genes . Coordinates span the full gene body.
 
     Columns loaded:
 
     - `chr` - chromosome
-    - `start` / `end` - single-bp TSS position (BED 0-based, half-open)
+    - `start` / `end` - full gene body coordinates (BED 0-based, half-open)
     - `gene_symbol` - gene symbol
-    - `score` - unused placeholder column from the source BED file
     - `strand` - `+` or `-`
-    - `gene_id` - Ensembl gene ID
-    - `gene_type` - GENCODE gene biotype (all `protein_coding` here)
+    - `gene_id` - Ensembl gene ID (version suffix stripped)
+    - `gene_type` - GENCODE gene biotype
     """)
     return
-
-
-@app.cell(hide_code=True)
-def load_gene_metadata(pd, project_root):
-    # The bed file stores a 500bp window around each gene's TSS (-250/+249,
-    # BED 0-based half-open). The TSS itself, not "the first base of the
-    # window", the base the window is centered on, is the window's midpoint.
-    _gene_metadata_fnp = "annotations/gencode.v43.protein_coding.TSS500bp.bed"
-    gene_metadata_df = pd.read_csv(
-        project_root / _gene_metadata_fnp,
-        sep="\t",
-        header=0,
-        names=["chr", "start", "end", "gene_symbol", "score", "strand", "gene_id", "gene_type"]
-    )
-    _tss_pos = (gene_metadata_df["start"] + gene_metadata_df["end"]) // 2
-    gene_metadata_df["start"] = _tss_pos
-    gene_metadata_df["end"] = _tss_pos + 1
-    gene_metadata_df
-    return (gene_metadata_df,)
 
 
 @app.cell(hide_code=True)
@@ -162,19 +142,24 @@ def get_igvf_gencode_intro(mo):
 
 
 @app.cell
-def get_igvf_gencode(project_root):
-    import urllib.request
-
+def get_igvf_gencode(Connection, project_root):
     igvf_gencode_gtf_path = project_root / "annotations/IGVFFI9573KOZR.gtf.gz"
-    _igvf_gencode_url = "https://api.data.igvf.org/reference-files/IGVFFI9573KOZR/@@download/IGVFFI9573KOZR.gtf.gz"
+    igvf_gencode_gtf_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not igvf_gencode_gtf_path.exists():
-        igvf_gencode_gtf_path.parent.mkdir(parents=True, exist_ok=True)
-        urllib.request.urlretrieve(_igvf_gencode_url, igvf_gencode_gtf_path)
+        _conn = Connection(igvf_mode="prod")
+        _conn.download(rec_id="IGVFFI9573KOZR", directory=str(igvf_gencode_gtf_path.parent))
 
     # Show only the path relative to the repo, not the full local filesystem path
     igvf_gencode_gtf_path.relative_to(project_root)
     return (igvf_gencode_gtf_path,)
+
+
+@app.cell(hide_code=True)
+def load_gene_metadata(gtf_to_gene_metadata, igvf_gencode_gtf_path):
+    gene_metadata_df = gtf_to_gene_metadata(igvf_gencode_gtf_path)
+    gene_metadata_df
+    return (gene_metadata_df,)
 
 
 @app.cell(hide_code=True)
@@ -192,11 +177,10 @@ def load_h5_counts(
     ad,
     ch2_data_root_path,
     gene_metadata_df,
+    gzip,
     igvf_gencode_gtf_path,
+    re,
 ):
-    import gzip
-    import re
-
     try:
         _h5ad_path = ch2_data_root_path / "rna/h5ad/IGVFFI8316SYHQ.h5ad"
         adata = ad.read_h5ad(_h5ad_path)
@@ -227,10 +211,7 @@ def load_h5_counts(
         _gene_symbol = adata.var["gene_symbol"].fillna("").astype(str)
         _pc_mask = (adata.var["gene_type"] == "protein_coding").to_numpy()
 
-        # The protein-coding-only TSS metadata merge above leaves mito rRNAs/tRNAs
-        # without a gene_symbol, so a plain "MT-" symbol prefix match misses them.
-        # Use the GENCODE v43 GTF (downloaded above) as ground truth instead: every
-        # gene actually annotated on chrM, not just the ones with a MANE symbol.
+        # Use the GENCODE v43 GTF (downloaded above) to get all the genes annotated on chrM
         _chrm_gene_ids = set()
         with gzip.open(igvf_gencode_gtf_path, "rt") as _gtf:
             for _line in _gtf:
@@ -298,7 +279,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def plot_knee_plot(adata, alt, mo, np, pd, qc_metrics_computed):
     mo.stop( not qc_metrics_computed)
 
@@ -322,7 +303,15 @@ def plot_knee_plot(adata, alt, mo, np, pd, qc_metrics_computed):
         tooltip=[alt.Tooltip("rank:Q", title="Rank"), alt.Tooltip("n_umis:Q", title="# UMIs", format=",")],
     ).add_params(knee_umi_selection).properties(width=550, height=400, title="Knee plot")
 
-    knee_chart_ui = mo.ui.altair_chart(_knee_chart, chart_selection=False, legend_selection=False)
+    # mo.ui.altair_chart calls chart.to_json() without format="vega", which
+    # conflicts with the vegafusion transformer enabled globally in `imports`
+    # (it requires that format explicitly). enable_vegafusion has no tracked
+    # dataflow dependency, so whether it runs before or after this cell is
+    # arbitrary -- this chart's data is already a ~2000-point downsample and
+    # doesn't need vegafusion anyway, so drop back to the default transformer
+    # just for this widget rather than depend on scheduler order.
+    with alt.data_transformers.enable("default"):
+        knee_chart_ui = mo.ui.altair_chart(_knee_chart, chart_selection=False, legend_selection=False)
     knee_chart_ui
     return knee_chart_ui, knee_full_counts
 
@@ -505,7 +494,7 @@ def qc_round1_summary(adata, mito_mad_cutoff_2_5, mo, pre_mito_qc_mask):
 @app.cell(hide_code=True)
 def notes_on_mito_content(mo):
     mo.md(r"""
-    The 10X multi-ome protocol requires nuclei in input, thus we would expect mitochondrial percentage to be close to 0. We see a lot of barcodes with high mitochondrial content. It could be due to incomplete nuclei isolation or ambient/cytoplasmic contamination. We filter on a median + 2.5 MADs mito cutoff (computed on the level-1-passing population) rather than a fixed threshold, to adapt to this dataset's own distribution.
+    Being the input extracted nuclei, we would expect mitochondrial percentage to be close to 0. We see a lot of barcodes with high mitochondrial content. It could be due to incomplete nuclei isolation or ambient/cytoplasmic contamination. We filter on a median + 2.5 MADs mito cutoff (computed on the level-1-passing population) rather than a fixed threshold, to adapt to this dataset's own distribution.
     """)
     return
 
@@ -655,7 +644,8 @@ def _(adata_flt, is_data_normalized, mo, sc):
 
 
 @app.cell
-def _(adata_flt, sc):
+def _(adata_flt, hvg_computed, sc):
+    hvg_computed  # ran after highly variable genes were computed
     sc.pl.highly_variable_genes(adata_flt)
     return
 
@@ -721,7 +711,8 @@ def pca_axis_setup(adata_flt, mo, pca_axis_title, pca_computed):
 
 
 @app.cell(hide_code=True)
-def pca_pc1_pc2_colored(adata_flt, sc):
+def pca_pc1_pc2_colored(adata_flt, pca_computed, sc):
+    pca_computed  # ran after PCA
     sc.pl.pca(
         adata_flt,
         color=["pct_counts_mt", "pct_counts_pc_flt", "total_counts"],
@@ -774,27 +765,14 @@ def leiden_clustering(adata_flt, mo, neighbors_computed, sc):
 def mito_pct_per_leiden_cluster(
     adata_flt,
     alt,
-    doublet_dominated_clusters,
     leiden_computed,
     okabe_ito_palette,
 ):
     leiden_computed  # ran after leiden clustering
-    doublet_dominated_clusters  # ran after doublet-dominated clusters were identified
 
     # % mito per leiden cluster, to spot a mito-driven cluster before it gets a
     # dedicated deep-dive (see the cluster 2 sections below).
     _cluster_order = sorted(adata_flt.obs["leiden"].cat.categories, key=int)
-
-    _median_mito_by_cluster = adata_flt.obs.groupby("leiden", observed=True)["pct_counts_mt"].median()
-
-    # "Moderately elevated" clusters are picked out via the largest gap in the
-    # sorted per-cluster median %mito among non-doublet-dominated clusters (their
-    # mito elevation already has a separate explanation), rather than a fixed
-    # list, so this stays correct if Leiden renumbers clusters on a future re-run.
-    _non_doublet_medians = _median_mito_by_cluster.drop(index=doublet_dominated_clusters).sort_values(ascending=False)
-    _gaps = -_non_doublet_medians.diff().dropna()
-    _split = int(_gaps.to_numpy().argmax()) + 1
-    high_mito_clusters = sorted(_non_doublet_medians.index[:_split].tolist(), key=int)
 
     _box = alt.Chart(adata_flt.obs[["leiden", "pct_counts_mt"]]).mark_boxplot(
         color=okabe_ito_palette[5], size=25,
@@ -807,11 +785,13 @@ def mito_pct_per_leiden_cluster(
         title="% mitochondrial counts per leiden cluster",
         width=650, height=350,
     ).configure_view(strokeWidth=0)
-    return (high_mito_clusters,)
+    return
 
 
 @app.cell
-def _(adata_flt, sc):
+def _(adata_flt, leiden_computed, pca_computed, sc):
+    pca_computed  # ran after PCA
+    leiden_computed  # ran after leiden clustering
     sc.pl.pca(
         adata_flt,
         color=["leiden"],
@@ -839,11 +819,13 @@ def compute_umap(adata_flt, mo, neighbors_computed, sc):
         return True
 
     umap_computed = _run_umap(adata_flt)
-    return
+    return (umap_computed,)
 
 
 @app.cell
-def plot_umap(adata_flt, sc):
+def plot_umap(adata_flt, leiden_computed, sc, umap_computed):
+    umap_computed  # ran after UMAP was computed
+    leiden_computed  # ran after leiden clustering
     sc.pl.umap(adata_flt, color=["leiden", "pct_counts_mt"], cmap="cividis")
     return
 
@@ -901,6 +883,7 @@ def scrublet_threshold_number_ui(mo, scrublet_auto_threshold):
 def scrublet_threshold_interactive_plot(
     adata_flt,
     alt,
+    leiden_computed,
     mo,
     np,
     okabe_ito_palette,
@@ -909,6 +892,8 @@ def scrublet_threshold_interactive_plot(
     scrublet_scores_sim,
     scrublet_threshold_number,
 ):
+    leiden_computed  # ran after leiden clustering
+
     # Raw per-cell scores, no manual numpy pre-binning -- VegaFusion pre-aggregates
     # in Python, so Altair's own bin transform can run directly on the full
     # dataset without hitting the row-embed limit.
@@ -1036,9 +1021,9 @@ def _(mo):
 
 
 @app.cell
-def initialize_cmo(ad, adata_flt, project_root):
+def initialize_cmo(ad, adata_flt, ch2_data_root_path):
     # path to the cmo counts
-    _cmo_counts_path = project_root / "data/10X_miltiome_5_timepoints/channel2/cmo_counts/adata.h5ad"
+    _cmo_counts_path = ch2_data_root_path / "cmo_counts/adata.h5ad"
 
     adata_cmo = ad.read_h5ad(_cmo_counts_path)
 
@@ -1479,12 +1464,14 @@ def cmo_doublets_per_leiden_pct(
     adata_flt,
     alt,
     cmo_assignment_computed,
+    leiden_computed,
     mo,
     np,
     okabe_ito_palette,
     pd,
 ):
     cmo_assignment_computed  # ran after CMO tags were assigned
+    leiden_computed  # ran after leiden clustering
 
     # Same cluster ordering (by Scrublet singlet %) applied to both panels for direct comparison
     _singlet_scrublet = (~adata_flt.obs["scrublet_predicted_doublet"]).rename("singlet")
@@ -1662,8 +1649,10 @@ def umap_by_cmo_hashing_altair(
     np,
     okabe_ito_palette,
     pd,
+    umap_computed,
 ):
     cmo_assignment_computed  # ran after CMO tags were assigned
+    umap_computed  # ran after UMAP was computed
 
     _status_order = ["Singlet", "Doublet", "Negative"]
     _status_colors = {"Singlet": okabe_ito_palette[3], "Doublet": okabe_ito_palette[8], "Negative": okabe_ito_palette[0]}
@@ -1755,8 +1744,9 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def leiden_doublet_overview(adata_flt, cmo_assignment_computed):
+def leiden_doublet_overview(adata_flt, cmo_assignment_computed, leiden_computed):
     cmo_assignment_computed  # ran after CMO tags were assigned
+    leiden_computed  # ran after leiden clustering
 
     # Per-cluster overview: does the CMO-hashing doublet rate track the Scrublet doublet rate?
     leiden_doublet_summary = adata_flt.obs.groupby("leiden", observed=True).agg(
@@ -1794,7 +1784,7 @@ def doublet_cluster_investigation_intro(
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def doublet_pct_forest_plot_intro(mo):
     mo.md(r"""
     ### Doublet % by threshold: is the confounding real?
@@ -1895,7 +1885,7 @@ def doublet_pct_forest_plot(
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def n_pos_distribution_vs_null_intro(
     mo,
     representative_doublet_cluster,
@@ -2001,6 +1991,29 @@ def doublet_cluster_conclusion(
 
 
 @app.cell(hide_code=True)
+def high_mito_cluster_selection(
+    adata_flt,
+    doublet_dominated_clusters,
+    leiden_computed,
+):
+    doublet_dominated_clusters  # ran after doublet-dominated clusters were identified
+    leiden_computed  # ran after leiden clustering
+
+    # "Moderately elevated" clusters are picked out via the largest gap in the
+    # sorted per-cluster median %mito among non-doublet-dominated clusters (their
+    # mito elevation already has a separate explanation), rather than a fixed
+    # list, so this stays correct if Leiden renumbers clusters on a future re-run.
+    _median_mito_by_cluster = adata_flt.obs.groupby("leiden", observed=True)["pct_counts_mt"].median()
+    _non_doublet_medians = _median_mito_by_cluster.drop(index=doublet_dominated_clusters).sort_values(ascending=False)
+    _gaps = -_non_doublet_medians.diff().dropna()
+    _split = int(_gaps.to_numpy().argmax()) + 1
+    high_mito_clusters = sorted(_non_doublet_medians.index[:_split].tolist(), key=int)
+
+    high_mito_clusters
+    return (high_mito_clusters,)
+
+
+@app.cell(hide_code=True)
 def high_mito_investigation_intro(
     adata_flt,
     doublet_dominated_clusters,
@@ -2024,7 +2037,7 @@ def high_mito_investigation_intro(
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def high_mito_marker_comparison(
     adata_flt,
     high_mito_clusters,
@@ -2096,7 +2109,7 @@ def high_mito_marker_comparison(
     return (high_mito_stress_genes,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def high_mito_stress_score_by_cluster(
     adata_flt,
     alt,
@@ -2147,7 +2160,7 @@ def high_mito_stress_score_by_cluster(
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def high_mito_density_comparison(
     adata_flt,
     alt,
@@ -2203,7 +2216,7 @@ def high_mito_density_comparison(
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def high_mito_investigation_conclusion(mo):
     mo.md(r"""
     ### High-mito investigation: conclusion
@@ -2229,7 +2242,7 @@ def negative_tag_rescue(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def negative_vs_singlet_qc_intro(mo):
     mo.md(r"""
     ### Negative vs. Singlet QC profile
@@ -2299,7 +2312,7 @@ def negative_vs_singlet_qc(
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def rescue_tag_cmo_signal_check_intro(mo):
     mo.md(r"""
     ### Rescue-tag validation against the sub-threshold CMO signal
@@ -2383,7 +2396,7 @@ def rescue_tag_cmo_signal_check(
     ({np.median(_best_gap[~_match]):.2f}). When there's a genuine near-miss CMO signal, it
     tends to agree with the rescue tag, when the signal is weak or noisy, agreement is closer to chance.
     """)
-    return rescue_tag_match_summary, rescue_tag_null_rate, stats
+    return rescue_tag_match_summary, rescue_tag_null_rate
 
 
 @app.cell(hide_code=True)
@@ -2421,7 +2434,7 @@ def rescue_tag_match_rate_plot(
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def negative_tag_rescue_conclusion(mo):
     mo.md(r"""
     ### Negative tag rescue: conclusion
@@ -2443,7 +2456,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def strict_qc_cascade_intro(mo):
     mo.md(r"""
     ## Consolidated strict QC decision
@@ -2536,7 +2549,7 @@ def strict_qc_cascade(
     )
 
 
-@app.cell
+@app.cell(hide_code=True)
 def rescue_negative_tags_intro(mo):
     mo.md(r"""
     ## Apply the negative tag rescue
@@ -2621,12 +2634,14 @@ def rescue_negative_tags(
 def pca_by_rescued_timepoint(
     adata_flt,
     ec_diff_palette,
+    pca_computed,
     rescue_computed,
     sc,
     strict_qc_computed,
 ):
     strict_qc_computed  # ran after strict QC flags were computed
     rescue_computed  # ran after rescue tags were computed
+    pca_computed  # ran after PCA
 
     _adata_qc_view = adata_flt[adata_flt.obs["pass_strict_qc"]]
     _palette = {**ec_diff_palette, "None": "#4D4D4D"}
@@ -2649,9 +2664,11 @@ def umap_by_rescued_timepoint(
     rescue_computed,
     sc,
     strict_qc_computed,
+    umap_computed,
 ):
     strict_qc_computed  # ran after strict QC flags were computed
     rescue_computed  # ran after rescue tags were computed
+    umap_computed  # ran after UMAP was computed
 
     _adata_qc_view = adata_flt[adata_flt.obs["pass_strict_qc"]]
     sc.pl.umap(
@@ -2704,7 +2721,7 @@ def write_qc_annotations_tsv(
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def filtering_strategy_conclusion(
     adata_flt,
     doublet_dominated_clusters,
@@ -2797,7 +2814,7 @@ def cluster_tag_mismatch_check(
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def cluster12_investigation_intro(mo):
     mo.md(r"""
     ### Cluster 12: doublet or transition state?
@@ -2813,11 +2830,13 @@ def cluster12_investigation(
     alt,
     cmo_assignment_computed,
     ec_diff_palette,
+    leiden_computed,
     mo,
     okabe_ito_palette,
     pd,
 ):
     cmo_assignment_computed  # ran after CMO tags were assigned
+    leiden_computed  # ran after leiden clustering
 
     # See cluster12_investigation_intro above for the interpretation.
     _mask12 = (adata_flt.obs["leiden"] == "12").to_numpy()
@@ -2914,7 +2933,7 @@ def cluster12_conclusion(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def cluster4_investigation_intro(mo):
     mo.md(r"""
     ### Cluster 4: doublet or multi-timepoint progenitor state?
@@ -2924,17 +2943,19 @@ def cluster4_investigation_intro(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def cluster4_investigation(
     adata_flt,
     alt,
     cmo_assignment_computed,
     ec_diff_palette,
+    leiden_computed,
     mo,
     okabe_ito_palette,
     pd,
 ):
     cmo_assignment_computed  # ran after CMO tags were assigned
+    leiden_computed  # ran after leiden clustering
 
     # See cluster4_investigation_intro above for the interpretation.
     _mask4 = (adata_flt.obs["leiden"] == "4").to_numpy()
@@ -2993,7 +3014,7 @@ def cluster4_investigation(
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def cluster4_marker_genes_intro(mo):
     mo.md(r"""
     ### Marker genes analysis
@@ -3003,7 +3024,7 @@ def cluster4_marker_genes_intro(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def cluster4_marker_genes(adata_flt, sc, strict_qc_computed):
     strict_qc_computed  # ran after strict QC flags were computed
 
@@ -3017,7 +3038,7 @@ def cluster4_marker_genes(adata_flt, sc, strict_qc_computed):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def cluster4_conclusion(mo):
     mo.md(r"""
     ## Cluster 4: a proliferative progenitor state spanning early timepoints (not a doublet artifact)
@@ -3039,7 +3060,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def rna_adata_post_filter(
     adata_flt,
     rescue_computed,
@@ -3067,7 +3088,7 @@ def rna_adata_post_filter(
     return rna_adata, rna_adata_post_filter_computed
 
 
-@app.cell
+@app.cell(hide_code=True)
 def umap_post_filter_leiden_mito(
     ec_diff_palette,
     rna_adata,
@@ -3098,7 +3119,7 @@ def umap_post_filter_leiden_mito(
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def old_vs_new_cluster_confusion_matrix(
     adata_flt,
     alt,
@@ -3181,7 +3202,7 @@ def load_chrom_sizes(pd, project_root):
     return (chrom_dict,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def atac_import_intro(mo):
     mo.md(r"""
     ### Import ATAC fragments
@@ -3191,7 +3212,7 @@ def atac_import_intro(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def load_strict_qc_whitelist(ch2_outdir_root, pd):
     # See atac_import_intro above.
     _qc_annotations = pd.read_csv(
@@ -3202,7 +3223,7 @@ def load_strict_qc_whitelist(ch2_outdir_root, pd):
     return (assigned_cells,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def import_atac_fragments(
     assigned_cells,
     ch2_data_root_path,
@@ -3290,7 +3311,16 @@ def atac_fragment_tsse_plot(alt, df, min_frag, min_tsse, okabe_ito_palette):
 
 
 @app.cell
-def map_rescued_cmo_tag_to_atac(adata_flt, atac_adata):
+def map_rescued_cmo_tag_to_atac(adata_flt, atac_adata, atac_spectral_umap_leiden_computed, rescue_computed):
+    rescue_computed  # ran after rescue tags were computed
+    # Forces a deterministic write order into atac_adata.obs: both this cell
+    # and atac_spectral_umap_leiden mutate atac_adata.obs in place (adding
+    # "rescued_cmo_tag" and "leiden" respectively) with no data dependency
+    # between them, so without this, which column lands first -- and thus
+    # atac_adata.obs's final column order -- depends on arbitrary execution
+    # order rather than being reproducible.
+    atac_spectral_umap_leiden_computed  # ran after spectral embedding, UMAP, KNN, and Leiden clustering
+
     def _map_rescued_cmo_tag_to_atac(atac_adata, adata_flt):
         # Use rescued_cmo_tag, not the raw timepoint_scanpy, so cluster-rescued
         # negatives keep their assigned timepoint here too.
@@ -3399,7 +3429,7 @@ def atac_umap_intro(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def atac_umap_by_timepoint_and_leiden(
     atac_adata,
     atac_spectral_umap_leiden_computed,
@@ -3611,441 +3641,6 @@ def saving_h5ad(
     return
 
 
-@app.cell
-def ambient_rna_investigation_intro(mo):
-    mo.md(r"""
-    ### Is the residual %mito signal ambient RNA or real biology?
-
-    Barcodes failing ATAC QC show a bimodal RNA %mito distribution, which raises the question: does the RNA-side %mito signal reflect real per-cell mitochondrial content, or ambient RNA contamination? If it's real biology, it should leave a footprint in the independent, DNA-based ATAC measurement too. We test this three ways:
-
-    - **Spatial autocorrelation** of %mito on each modality's own UMAP (Moran's I).
-    - **KNN neighbor correlation**: whether a cell's own %mito predicts its neighbors' %mito, in each modality's own KNN graph.
-    - **Count dependence**: whether low RNA counts (a hallmark of ambient dilution) are actually driving the residual signal.
-
-    See the conclusion at the end of this section.
-    """)
-    return
-
-
-@app.cell
-def morans_i_mito_by_embedding(
-    adata_flt,
-    atac_adata,
-    atac_spectral_umap_leiden_computed,
-    np,
-    pd,
-    rna_adata,
-    rna_adata_post_filter_computed,
-):
-    rna_adata_post_filter_computed  # ran after normalization, HVG, PCA, neighbors, leiden, and UMAP (RNA)
-    atac_spectral_umap_leiden_computed  # ran after spectral embedding, UMAP, KNN, and Leiden clustering (ATAC)
-
-    from sklearn.neighbors import kneighbors_graph as _kneighbors_graph_moran
-
-    # Kept sparse throughout (no .toarray()) to avoid densifying an n x n matrix,
-    # which would be 500MB+ here.
-    def _morans_i(coordinates, values, k=15):
-        _w = _kneighbors_graph_moran(coordinates, k, mode="connectivity", include_self=False)
-        _row_sums = np.asarray(_w.sum(axis=1)).flatten()
-        _w = _w.multiply(1 / _row_sums[:, None]).tocsr()  # row-normalize weights
-
-        _z = values - values.mean()
-        _s_zero = _w.sum()
-        _numerator = len(values) * _z.dot(_w.dot(_z))
-        _denominator = _s_zero * np.sum(_z ** 2)
-        return _numerator / _denominator
-
-    # rna_adata and atac_adata are distinct AnnData objects sharing the ATAC-side
-    # barcode subset, each with its own UMAP.
-    _rna_coords = rna_adata.obsm["X_umap"]
-    _rna_mito = rna_adata.obs["pct_counts_mt"].to_numpy()
-
-    _atac_coords = atac_adata.obsm["X_umap"]
-    _rna_mito_for_atac_cells = adata_flt.obs.loc[atac_adata.obs_names, "pct_counts_mt"].to_numpy()
-
-    morans_i_by_embedding = pd.DataFrame({
-        "embedding": ["RNA UMAP", "ATAC UMAP"],
-        "morans_i_pct_mito": [_morans_i(_rna_coords, _rna_mito), _morans_i(_atac_coords, _rna_mito_for_atac_cells)],
-    })
-    morans_i_by_embedding
-    return
-
-
-@app.cell
-def neighbor_mean_mito_correlation(
-    adata_flt,
-    atac_adata,
-    atac_spectral_umap_leiden_computed,
-    np,
-    pd,
-    rna_adata,
-    rna_adata_post_filter_computed,
-):
-    rna_adata_post_filter_computed  # ran after normalization, HVG, PCA, neighbors, leiden, and UMAP (RNA)
-    atac_spectral_umap_leiden_computed  # ran after spectral embedding, UMAP, KNN, and Leiden clustering (ATAC)
-
-    # Reuse the KNN graphs already computed for each modality (RNA: sc.pp.neighbors
-    # in rna_adata_post_filter; ATAC: snap.pp.knn), rather than raw embedding coordinates.
-    _rna_conn = rna_adata.obsp["connectivities"]
-    _rna_row_sums = np.asarray(_rna_conn.sum(axis=1)).flatten()
-    _rna_mito = rna_adata.obs["pct_counts_mt"].to_numpy()
-    _rna_neighbor_mean_mito = np.asarray(_rna_conn.dot(_rna_mito)).flatten() / _rna_row_sums
-
-    # snapatac2's snap.pp.knn only stores obsp["distances"], not a weighted
-    # connectivities matrix, so binarize it (nonzero = neighbor).
-    _atac_conn = (atac_adata.obsp["distances"] > 0).astype(float)
-    _atac_row_sums = np.asarray(_atac_conn.sum(axis=1)).flatten()
-    _rna_mito_for_atac_cells = adata_flt.obs.loc[atac_adata.obs_names, "pct_counts_mt"].to_numpy()
-    _atac_neighbor_mean_mito = np.asarray(_atac_conn.dot(_rna_mito_for_atac_cells)).flatten() / _atac_row_sums
-
-    neighbor_mean_mito_corr = pd.DataFrame({
-        "space": ["RNA (KNN graph)", "ATAC (KNN graph)"],
-        "corr_own_vs_neighbor_mean_mito": [
-            np.corrcoef(_rna_mito, _rna_neighbor_mean_mito)[0, 1],
-            np.corrcoef(_rna_mito_for_atac_cells, _atac_neighbor_mean_mito)[0, 1],
-        ],
-    })
-    neighbor_mean_mito_corr
-    return
-
-
-@app.cell
-def total_counts_vs_mito_by_timepoint(
-    alt,
-    ec_diff_palette,
-    np,
-    pd,
-    rna_adata,
-    rna_adata_post_filter_computed,
-    stats,
-):
-    rna_adata_post_filter_computed  # ran after normalization, HVG, PCA, neighbors, leiden, and UMAP (RNA)
-
-    # Colored by timepoint (rescued_cmo_tag).
-    _timepoint_order = ["d0", "d1", "d2", "d3", "d4"]
-    _counts_mito_df = pd.DataFrame({
-        "total_counts": rna_adata.obs["total_counts"].to_numpy(),
-        "pct_counts_mt": rna_adata.obs["pct_counts_mt"].to_numpy(),
-        "timepoint": rna_adata.obs["rescued_cmo_tag"].to_numpy(),
-    })
-
-    _scatter = alt.Chart(_counts_mito_df).mark_circle(size=15, opacity=0.5).encode(
-        x=alt.X("total_counts:Q", title="Total RNA counts", scale=alt.Scale(type="log")),
-        y=alt.Y("pct_counts_mt:Q", title="% mitochondrial counts"),
-        color=alt.Color(
-            "timepoint:N", title="Timepoint",
-            scale=alt.Scale(domain=_timepoint_order, range=[ec_diff_palette[t] for t in _timepoint_order]),
-        ),
-    )
-
-    # Combine, set properties, and apply clean view adjustments safely
-    _counts_mito_chart = _scatter.properties(
-        title="Are low-count cells driving the remaining mito signal?",
-        width=550, 
-        height=400,
-    ).configure_view(
-        strokeWidth=0 
-    )
-
-    # Added .copy() here to stop the pandas layout warning
-    df_zone = _counts_mito_df[
-        (_counts_mito_df["total_counts"] <= 10000) & 
-        (_counts_mito_df["pct_counts_mt"] <= 7)
-    ].copy()
-
-    # Run regression against log10 total counts
-    slope, intercept, r_value, p_value, std_err = stats.linregress(
-        np.log10(df_zone["total_counts"]), 
-        df_zone["pct_counts_mt"]
-    )
-
-    print(f"R-squared: {r_value**2:.4f}")
-    print(f"Slope:     {slope:.4f}")
-    print(f"p-value:   {p_value:.4e}")
-
-    # Quantile cut into equal halves
-    df_zone["count_bin"] = pd.qcut(df_zone["total_counts"], q=2, labels=["Low UMI Half", "High UMI Half"])
-
-    # Calculate the average mito percentage in each half
-    summary = df_zone.groupby("count_bin", observed=False)["pct_counts_mt"].mean()
-    print("\n--- Average Mito % by Library Size Half ---")
-    print(summary)
-    print("-------------------------------------------\n")
-
-    _counts_mito_chart
-    return
-
-
-@app.cell
-def decontx_validation_intro(mo):
-    mo.md(r"""
-    ### The definitive test: does removing ambient RNA eliminate the Moran's I signal?
-
-    If the spatial autocorrelation of %mito on the RNA UMAP (Moran's I 0.295, see `morans_i_mito_by_embedding`) is really driven by ambient RNA contamination, then estimating and subtracting that contamination per cell (DecontX, run on raw counts using the existing Leiden clusters as groups) should collapse it toward 0. If it's real biology, decontamination should not erase it. This does not modify `rna_adata` itself, DecontX runs on a copy.
-    """)
-    return
-
-
-@app.cell
-def run_decontx(mo, rna_adata, rna_adata_post_filter_computed):
-    rna_adata_post_filter_computed  # ran after normalization, HVG, PCA, neighbors, leiden, and UMAP (RNA)
-
-    import decontx
-
-    def _run_decontx(adata):
-        return decontx.decontx(adata, cluster_key="leiden", copy=True)
-
-    # Kept minimal and isolated: this is the expensive step (~17 min), so all
-    # downstream analysis (Moran's I, contamination scatter, etc.) should be in
-    # separate cells referencing this public result, never re-triggering DecontX.
-    rna_decontx_adata = _run_decontx(rna_adata)
-    decontx_computed = True
-    mo.md(f"DecontX finished. Mean contamination: {rna_decontx_adata.obs['decontX_contamination'].mean():.1%}")
-    return decontx_computed, rna_decontx_adata
-
-
-@app.cell
-def decontx_moran_validation(
-    decontx_computed,
-    mo,
-    np,
-    pd,
-    rna_adata,
-    rna_decontx_adata,
-):
-    decontx_computed  # ran after DecontX finished
-
-    from sklearn.neighbors import kneighbors_graph as _kneighbors_graph_decontx
-    # Recompute %mito from the decontaminated counts layer, restricted to the
-    # same 37 mito genes (adata.var["mt"]) used everywhere else in this notebook.
-    _mt_mask = rna_adata.var["mt"].to_numpy()
-    _decontx_counts = rna_decontx_adata.layers["decontX_counts"]
-    _decontx_counts = _decontx_counts.toarray() if hasattr(_decontx_counts, "toarray") else np.asarray(_decontx_counts)
-    _total_decontx = _decontx_counts.sum(axis=1).astype(float)
-    _mt_decontx = _decontx_counts[:, _mt_mask].sum(axis=1).astype(float)
-    rna_pct_counts_mt_decontx = np.divide(
-        _mt_decontx, _total_decontx, out=np.zeros_like(_total_decontx), where=_total_decontx > 0
-    ) * 100
-    rna_decontx_contamination = rna_decontx_adata.obs["decontX_contamination"].to_numpy()
-
-    # Same sparse Moran's I as morans_i_mito_by_embedding, on the same RNA UMAP
-    # coordinates, just swapping in the decontaminated %mito values.
-    def _morans_i_decontx(coordinates, values, k=15):
-        _w = _kneighbors_graph_decontx(coordinates, k, mode="connectivity", include_self=False)
-        _row_sums = np.asarray(_w.sum(axis=1)).flatten()
-
-        # Catch any disconnected singletons or zeroes before dividing
-        _row_sums_safe = np.where(_row_sums == 0, 1, _row_sums)
-        _w = _w.multiply(1 / _row_sums_safe[:, None]).tocsr()
-
-        _z = values - values.mean()
-        _s_zero = _w.sum()
-        _numerator = len(values) * _z.dot(_w.dot(_z))
-        _denominator = _s_zero * np.sum(_z ** 2)
-        return _numerator / _denominator
-
-    _rna_coords = rna_adata.obsm["X_umap"]
-
-    morans_i_decontx_vs_raw = pd.DataFrame({
-        "pct_mito": ["Raw (pre-DecontX)", "Decontaminated (post-DecontX)"],
-        "morans_i_rna_umap": [
-            _morans_i_decontx(_rna_coords, rna_adata.obs["pct_counts_mt"].to_numpy()),
-            _morans_i_decontx(_rna_coords, rna_pct_counts_mt_decontx),
-        ],
-    })
-    decontx_moran_validation_computed = True
-    _mean_contamination = rna_decontx_contamination.mean()
-    mo.vstack([
-        morans_i_decontx_vs_raw,
-        mo.md(f"Mean estimated contamination fraction: {_mean_contamination:.1%}"),
-    ])
-    return (
-        decontx_moran_validation_computed,
-        rna_decontx_contamination,
-        rna_pct_counts_mt_decontx,
-    )
-
-
-@app.cell
-def save_decontx_results(
-    decontx_moran_validation_computed,
-    mo,
-    pd,
-    project_root,
-    rna_adata,
-    rna_decontx_contamination,
-    rna_pct_counts_mt_decontx,
-):
-    decontx_moran_validation_computed  # ran after the decontaminated %mito and contamination were derived
-
-    # Lightweight: per-cell scalars only, not the full dense decontX_counts matrix
-    # (which would be ~4GB for 8146 cells x 62757 genes).
-    _decontx_results_df = pd.DataFrame({
-        "decontX_contamination": rna_decontx_contamination,
-        "pct_counts_mt_decontx": rna_pct_counts_mt_decontx,
-        "pct_counts_mt_raw": rna_adata.obs["pct_counts_mt"].to_numpy(),
-    }, index=rna_adata.obs_names)
-
-    _decontx_results_path = project_root / "results/channel2/rna_decontx_results.tsv"
-    _decontx_results_df.to_csv(_decontx_results_path, sep="\t")
-    mo.md(f"Saved DecontX per-cell results to `{_decontx_results_path}`")
-    return
-
-
-@app.cell
-def decontx_contamination_vs_mito(
-    alt,
-    decontx_moran_validation_computed,
-    ec_diff_palette,
-    pd,
-    rna_adata,
-    rna_decontx_contamination,
-):
-    decontx_moran_validation_computed  # ran after the decontaminated %mito and contamination were derived
-
-    _timepoint_order = ["d0", "d1", "d2", "d3", "d4"]
-    _contam_df = pd.DataFrame({
-        "decontX_contamination": rna_decontx_contamination,
-        "pct_counts_mt": rna_adata.obs["pct_counts_mt"].to_numpy(),
-        "timepoint": rna_adata.obs["rescued_cmo_tag"].to_numpy(),
-    })
-
-    _contam_chart = alt.Chart(_contam_df).mark_circle(size=15, opacity=0.4).encode(
-        x=alt.X("decontX_contamination:Q", title="DecontX contamination fraction"),
-        y=alt.Y("pct_counts_mt:Q", title="% mitochondrial counts"),
-        color=alt.Color(
-            "timepoint:N", title="Timepoint",
-            scale=alt.Scale(domain=_timepoint_order, range=[ec_diff_palette[t] for t in _timepoint_order]),
-        ),
-    ).properties(
-        title="Does ambient contamination explain mitochondrial reads?",
-        width=550, height=400,
-    ).configure_view(strokeWidth=0)
-
-    _contam_chart
-    return
-
-
-@app.cell
-def _(rna_decontx_adata):
-    rna_decontx_adata
-    return
-
-
-@app.cell
-def mito_pocket_decontx_markers(
-    decontx_computed,
-    np,
-    rna_adata,
-    rna_decontx_adata,
-    sc,
-    scclr,
-):
-    decontx_computed  # ran after DecontX finished
-
-    # Which genes drive the high-mito pocket (5% split, same as the earlier
-    # per-timepoint self-segregation analysis), using the decontaminated counts
-    # rather than raw, so ambient contamination isn't itself driving the
-    # result. Normalized the same way as everywhere else in this notebook
-    # (scclr.pp.pflog on a copy) before running Wilcoxon rank_genes_groups, since
-    # library-size differences between groups would otherwise confound raw counts.
-    _decontx_view = rna_decontx_adata.copy()
-    _decontx_view.X = _decontx_view.layers["decontX_counts"]
-    scclr.pp.pflog(_decontx_view, target="auto")
-
-    _decontx_view.obs["mito_pocket"] = np.where(
-        _decontx_view.obs["pct_counts_mt"] > 5.0, "High_Mito", "Normal"
-    )
-
-    sc.tl.rank_genes_groups(
-        _decontx_view, groupby="mito_pocket", method="wilcoxon", layer="pflog", use_raw=False,
-    )
-
-    mito_pocket_decontx_markers = sc.get.rank_genes_groups_df(_decontx_view, group="High_Mito")
-    mito_pocket_decontx_markers["gene_symbol"] = mito_pocket_decontx_markers["names"].map(rna_adata.var["gene_symbol"])
-
-    sc.pl.rank_genes_groups(_decontx_view, n_genes=25, sharey=False)
-    mito_pocket_decontx_markers.head(25)
-    return
-
-
-@app.cell
-def mito_gradient_gene_correlation(
-    decontx_computed,
-    np,
-    pd,
-    rna_adata,
-    rna_decontx_adata,
-    rna_pct_counts_mt_decontx,
-    scclr,
-):
-    decontx_computed  # ran after DecontX finished
-
-    # Treat the decontaminated %mito as a continuous gradient rather than a binary
-    # split, and find genes whose (pflog-normalized) expression scales linearly
-    # with it. A per-gene OLS/GLM loop over 62,757 genes would be far too slow
-    # here, so this uses the same vectorized correlation-via-matrix-multiplication
-    # approach used earlier in this notebook for the mito gene correlation
-    # investigation (mathematically equivalent to the standardized coefficient of
-    # a per-gene linear regression against the gradient).
-    _decontx_view2 = rna_decontx_adata.copy()
-    _decontx_view2.X = _decontx_view2.layers["decontX_counts"]
-    scclr.pp.pflog(_decontx_view2, target="auto")
-
-    _pflog = _decontx_view2.layers["pflog"]
-    _n_cells = _pflog.shape[0]
-
-    _mito_gradient = rna_pct_counts_mt_decontx
-    _mean_mito = _mito_gradient.mean()
-    _std_mito = _mito_gradient.std()
-
-    _mean_genes = np.asarray(_pflog.mean(axis=0)).flatten()
-    _sq_mean_genes = np.asarray(_pflog.multiply(_pflog).mean(axis=0)).flatten()
-    _std_genes = np.sqrt(np.maximum(_sq_mean_genes - _mean_genes ** 2, 0))
-
-    _dot = np.asarray(_pflog.T.dot(_mito_gradient)).flatten()
-    _cov = _dot / _n_cells - _mean_genes * _mean_mito
-    _corr = _cov / (_std_genes * _std_mito + 1e-12)
-
-    mito_gradient_correlation = pd.DataFrame({
-        "gene_id": rna_adata.var_names,
-        "gene_symbol": rna_adata.var["gene_symbol"].to_numpy(),
-        "is_mt": rna_adata.var["mt"].to_numpy(),
-        "corr_with_mito_gradient": _corr,
-    })
-
-    # Mito genes are trivially correlated with the mito gradient by definition,
-    # exclude them to see what else tracks it.
-    mito_gradient_correlation_non_mt = (
-        mito_gradient_correlation.loc[~mito_gradient_correlation["is_mt"]]
-        .sort_values("corr_with_mito_gradient", ascending=False)
-    )
-    mito_gradient_correlation_non_mt.head(25)
-    return
-
-
-@app.cell
-def ambient_rna_evidence_conclusion(mo):
-    mo.md(r"""
-    ### Ambient RNA vs. real mitochondrial signal, conclusion
-
-    The evidence doesn't support one verdict for the whole dataset. It splits cleanly by population: baseline %mito variation among the majority, low-mito clusters looks like ambient contamination, while the moderate elevation in the four clusters already investigated in `high_mito_investigation_conclusion` does not.
-
-    **Spatial structure.** %mito is strongly spatially autocorrelated on the RNA UMAP (Moran's I 0.68, neighbor-mean correlation 0.94) but nearly unstructured on the ATAC UMAP (Moran's I 0.065, neighbor-mean correlation 0.24), the same RNA-only asymmetry seen before. On its own this doesn't distinguish ambient contamination from real, cluster-associated biology, since both would produce RNA-side clustering; it mainly argues against a purely random, cell-by-cell technical artifact.
-
-    **DecontX barely moves the global structure.** Correcting for estimated ambient contamination leaves the RNA Moran's I essentially unchanged (0.684 pre-DecontX to 0.693 post-DecontX, `decontx_moran_validation`), mean estimated contamination 10.0% (278 of 18,803 cells above 50%). If contamination were the dominant driver of the *global* spatial pattern, removing it should have visibly reduced this; it didn't, because the global statistic is dominated by between-cluster mean differences, and DecontX's correction is a within-cluster, per-cell operation.
-
-    **The per-cluster breakdown is the decisive evidence.** `decontx_contamination_vs_mito` shows DecontX's own estimated contamination fraction correlates with %mito very differently depending on the cluster: in the low-baseline-mito clusters (Pearson r 0.68-0.99), %mito is almost entirely what DecontX itself calls contamination. In the four moderately-elevated clusters already flagged in `high_mito_investigation_conclusion` (old clusters 2, 6, 7, 10), the correlation is flat or negative (r -0.06 to -0.54): their elevated mito is specifically *not* what DecontX attributes to ambient contamination, independently corroborating that conclusion's marker-gene-based case for real biology.
-
-    **Count dilution doesn't explain it either.** The classic ambient-dilution signature (low counts inflating %mito as a fraction) would produce a negative counts-vs-mito correlation. Instead, the global correlation is positive (Pearson r on log10 counts 0.35, Spearman 0.34), the opposite direction, so simple per-cell dilution isn't the mechanism.
-
-    **Not yet tested: a direct ATAC-based mito measurement.** All the ATAC evidence here (Moran's I, neighbor correlation) uses RNA-derived %mito plotted on the ATAC embedding; snapatac2 doesn't compute an ATAC-side mito-fragment fraction natively, so no direct RNA-vs-ATAC mito correlation has been run yet for the specific high-mito-excluded population. That's a planned follow-up, not included here since it doesn't exist as a reproducible result yet.
-
-    **Net:** the majority population's %mito noise is ambient contamination, well-characterized and already handled by DecontX where it matters. The four moderately-elevated clusters are real biology, already established independently by marker genes and now reinforced by their lack of a contamination signature. No filtering-strategy change follows from this either way: the ambient noise sits within clusters we're already keeping, and the real biology in the elevated clusters is exactly what `high_mito_investigation_conclusion` argued should not be filtered.
-    """)
-    return
-
-
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
@@ -4063,6 +3658,10 @@ def imports():
     import pandas as pd
     import scanpy as sc
     import seaborn as sns
+    import sys
+    import gzip
+    import re
+
     from dotenv import find_dotenv, load_dotenv
     from igvf_utils.connection import Connection
     from pathlib import Path
@@ -4071,28 +3670,42 @@ def imports():
     # get the project root path using the '.env' file.
     _env_path = find_dotenv(usecwd=True)
     project_root = Path(_env_path).parent
-    return Connection, Path, ad, alt, np, pd, plt, project_root, sc, sns
+
+    sys.path.insert(0, str(project_root / "scripts" / "python"))
+    from utils import gtf_to_gene_metadata
+
+    return (
+        Connection,
+        Path,
+        ad,
+        alt,
+        gtf_to_gene_metadata,
+        gzip,
+        np,
+        pd,
+        plt,
+        project_root,
+        re,
+        sc,
+        sns,
+    )
 
 
 @app.cell
-def enable_vegafusion(alt):
-    # VegaFusion pre-aggregates chart data in Python before sending it to the
-    # browser, raising Altair's default 5,000-row embed limit. This is enabled
-    # notebook-wide (rather than toggled per-cell) since alt.data_transformers is
-    # global module state, not a per-chart setting.
-    alt.data_transformers.enable("vegafusion")
-    return
-
-
-@app.cell
-def _():
-    import scclr
-
+def _(alt):
     # PFlog (shifted centered log-ratio) normalization instead of log1p(CP10K):
     # https://www.biorxiv.org/content/10.1101/2022.05.06.490859
     # jointly stabilizes technical variance, normalizes for sequencing depth, and
     # preserves within-cell gene ranking (monotonicity) via a data-calibrated
     # pseudocount and CLR centering, rather than a fixed round-number pseudocount.
+    import scclr
+
+
+    # VegaFusion pre-aggregates chart data in Python before sending it to the
+    # browser, raising Altair's default 5,000-row embed limit. This is enabled
+    # notebook-wide (rather than toggled per-cell) since alt.data_transformers is
+    # global module state, not a per-chart setting.
+    alt.data_transformers.enable("vegafusion")
     return (scclr,)
 
 
@@ -4165,53 +3778,6 @@ def pca_helpers(alt, pd):
         return _chart
 
     return (pca_axis_title,)
-
-
-@app.cell
-def mito_valley_cutoff(np):
-    from scipy.stats import gaussian_kde
-
-    def find_density_valley_cutoff(values: np.ndarray, n_grid: int = 500) -> tuple[float, float, float]:
-        """Find the density valley between the two most prominent modes of `values`.
-
-        Guards against picking up a minor noise bump as "the" valley if the KDE
-        isn't perfectly clean, by restricting the search to the region between
-        the two most prominent local maxima.
-
-        Parameters
-        ----------
-        values : np.ndarray
-            1-D array of observations to estimate the density from.
-        n_grid : int, default 500
-            Number of points in the grid the KDE is evaluated on.
-
-        Returns
-        -------
-        cutoff : float
-            The x-position of the valley.
-        lo_mode : float
-            The x-position of the lower of the two most prominent modes.
-        hi_mode : float
-            The x-position of the higher of the two most prominent modes.
-        """
-        _kde = gaussian_kde(values)
-        _grid = np.linspace(values.min(), values.max(), n_grid)
-        _density = _kde(_grid)
-
-        _is_min = (_density[1:-1] < _density[:-2]) & (_density[1:-1] < _density[2:])
-        _is_max = (_density[1:-1] > _density[:-2]) & (_density[1:-1] > _density[2:])
-        _minima = list(zip(_grid[1:-1][_is_min], _density[1:-1][_is_min]))
-        _maxima = list(zip(_grid[1:-1][_is_max], _density[1:-1][_is_max]))
-
-        _top2_maxima_x = sorted([x for x, _ in sorted(_maxima, key=lambda t: -t[1])[:2]])
-        _lo, _hi = _top2_maxima_x[0], _top2_maxima_x[-1]
-        _candidates = [(x, d) for x, d in _minima if _lo < x < _hi]
-
-        _cutoff = float(min(_candidates, key=lambda t: t[1])[0]) if _candidates else float(_minima[0][0])
-        return _cutoff, _lo, _hi
-
-
-    return
 
 
 if __name__ == "__main__":
