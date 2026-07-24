@@ -4,9 +4,15 @@ End-to-end CMO quantification for the 10x multiome 5 timepoints McGinnis dataset
 
 Single channel. CMO library structure (from seqspec IGVFFI6462KGWB):
   R1 (IGVFFI5411OJRK): cell barcode (0-16bp) + UMI (16-28bp)
-  R2 (IGVFFI4642YKWI): MULTI-seq barcode / CMO tag (0-8bp)
-  R3 (IGVFFI5223HYRP): cDNA — not used for CMO quantification
+  R2 (IGVFFI4642YKWI): constant capture/handle sequence — NOT the tag, unused
+  R3 (IGVFFI5223HYRP): MULTI-seq barcode / CMO tag (0-8bp) + polyA
   I1 (IGVFFI6088QALC): i7 index — not used for CMO quantification
+
+NOTE: the CMO tag lives in R3, not R2. R2 (IGVFFI4642YKWI) is a near-constant
+handle (every read ~ TG.TCTCGGTGGTCGCCGTATCAT); using it as the tag gave only
+1.3% pseudoalignment and collapsed all calls onto one tag. R3's first 8bp match
+the 23-tag panel ~92% exactly (fwd, pos 0-8). This agrees with seqspec
+IGVFFI6462KGWB, whose kb output places the 8bp tag in file index 2 (= R3).
 
 CMO barcode columns: 'barcode' (sequence) and 'sample description' (name).
 
@@ -49,9 +55,10 @@ DEFAULT_ONLIST_ACCESSION = "IGVFFI8751YQRY" # 10x multiome cell barcode whitelis
 CMO_SEQUENCE_COL = "barcode"
 CMO_NAME_COL = "sample description"
 
-# kb read format: file0=R1 (barcode 0-16, UMI 16-28), file1=R2 (CMO tag 0-8)
-# Derived manually from seqspec IGVFFI6462KGWB — the seqspec tool output is
-# syntactically wrong for this library.
+# kb read format: file0=R1 (barcode 0-16, UMI 16-28), file1=R3 (CMO tag 0-8).
+# We pass fastqs as [R1, R3], so file1 is R3 and the tag range is 1,0,8. seqspec
+# IGVFFI6462KGWB places the 8bp tag in file index 2 (R3): its kb output segment
+# '...,2,0,8:...' was the correct clue; the earlier hardcoding to R2 was the bug.
 READ_FORMAT = "0,0,16:0,16,28:1,0,8"
 
 DEFAULT_OUTPUT_DIR = Path("/oak/stanford/groups/engreitz/Projects/EC_Screen/Data/10x_5_timepoints_mcginnis/CMO_counts")
@@ -111,21 +118,21 @@ def main() -> None:
         logging.info("Decompressing onlist -> %s", onlist_dest)
         onlist_dest.write_bytes(gzip.decompress(onlist_gz.read_bytes()))
 
-    # 4. FASTQs: R1 (barcode+UMI) and R2 (CMO tag) — file0 and file1
-    r1_href, r2_href = get_fastq_hrefs_ordered(
-        args.aux_accession, conn, ["R1", "R2"]
+    # 4. FASTQs: R1 (barcode+UMI) and R3 (CMO tag) — file0 and file1
+    r1_href, r3_href = get_fastq_hrefs_ordered(
+        args.aux_accession, conn, ["R1", "R3"]
     )
     fastq_dir = work / "fastqs"
     fastq_dir.mkdir(exist_ok=True)
     r1 = fastq_dir / r1_href.strip("/").split("/")[-1]
-    r2 = fastq_dir / r2_href.strip("/").split("/")[-1]
+    r3 = fastq_dir / r3_href.strip("/").split("/")[-1]
     stream_download(r1_href, r1, conn)
-    stream_download(r2_href, r2, conn)
+    stream_download(r3_href, r3, conn)
 
     # 5. Quantify
     quantify_channel(
         channel="cmo",
-        fastqs=[r1, r2],
+        fastqs=[r1, r3],
         index_dir=index_dir,
         onlist=onlist_dest,
         read_format=READ_FORMAT,
