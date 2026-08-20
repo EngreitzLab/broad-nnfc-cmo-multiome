@@ -13,6 +13,7 @@
 #     "python-dotenv==1.2.2",
 #     "scanpy[scrublet]==1.12.2",
 #     "scclr==0.1.0",
+#     "scikit-learn==1.9.0",
 #     "scipy==1.18.0",
 #     "seaborn==0.13.2",
 #     "snapatac2==2.9.0",
@@ -34,7 +35,6 @@ app = marimo.App(width="full")
 
 @app.cell
 def _():
-
     import marimo as mo
 
     return (mo,)
@@ -45,7 +45,7 @@ def _(mo):
     mo.md(r"""
     # Introduction
 
-    This notebook processes the 10x multiome data (**channel1**) for the endothelial differentiation time course: 5 timepoints (d0-d4), 5 biological replicates each. Samples were multiplexed using the MULTI-seq technique with CMO (Cell Multiplexing Oligo) barcodes. Data was processed with the IGVF pipeline using kallisto and the GENCODE v43 annotation, and CMO quantification was performed with the `kite` workflow from the `kallisto-bustools` suite.
+    This notebook processes the 10x multiome data (**produced by Chris McGinnis**) for the endothelial differentiation time course: 5 timepoints (d0-d4), 5 biological replicates each. Samples were multiplexed using the MULTI-seq technique with CMO (Cell Multiplexing Oligo) barcodes. Data was processed with the IGVF pipeline using kallisto and the GENCODE v43 annotation, and CMO quantification was performed with the `kite` workflow from the `kallisto-bustools` suite. Single channel (no channel1/channel2 split).
 
     The goals of this notebook are to:
 
@@ -56,9 +56,9 @@ def _(mo):
 
     IGVF portal accessions
 
-    - Analysis set : [IGVFDS5477BPOI](https://data.igvf.org/analysis-sets/IGVFDS5477BPOI/)
-    - Gene count matrix: [IGVFFI8944LOEO](https://data.igvf.org/matrix-files/IGVFFI8944LOEO/)
-    - Fragment file: [IGVFFI8123KHUC](https://data.igvf.org/tabular-files/IGVFFI8123KHUC/)
+    - Analysis set : [IGVFDS1612ZNCA](https://data.igvf.org/analysis-sets/IGVFDS1612ZNCA/)
+    - Gene count matrix: [IGVFFI5144GDQB](https://data.igvf.org/matrix-files/IGVFFI5144GDQB/)
+    - Fragment file: [IGVFFI6722CCZW](https://data.igvf.org/tabular-files/IGVFFI6722CCZW/)
     """)
     return
 
@@ -206,9 +206,9 @@ def _(mo):
 
 @app.cell
 def _(Connection, Path, project_root):
-    ch1_data_root_path = Path(project_root / "data/10X_multiome_5_timepoints/channel1/")
+    data_root_path = Path(project_root / "data/10x_multi_5_timepoints_mcginnis/")
 
-    ch1_outdir_root = Path(project_root /"results/10X_multiome_5_timepoints/channel1")
+    outdir_root = Path(project_root /"results/10x_multi_5_timepoints_mcginnis")
 
 
     # 1. Initialize the connection targeting the production portal
@@ -217,8 +217,8 @@ def _(Connection, Path, project_root):
 
     # 2. Files to download: (accession, destination subfolder)
     _files_to_download = [
-        ("IGVFFI8944LOEO", ch1_data_root_path / "rna/h5ad"),
-        ("IGVFFI8123KHUC", ch1_data_root_path / "atac/fragments"),
+        ("IGVFFI5144GDQB", data_root_path / "rna/h5ad"),
+        ("IGVFFI6722CCZW", data_root_path / "atac/fragments"),
     ]
 
     for _file_accession, _dest_dir in _files_to_download:
@@ -237,7 +237,7 @@ def _(Connection, Path, project_root):
         print(f"Downloading {_file_accession} to {_dest_dir}...")
         _downloaded_path = conn.download(rec_id=_file_accession, directory=str(_dest_dir))
         print(f"Successfully downloaded: {_downloaded_path}")
-    return ch1_data_root_path, ch1_outdir_root
+    return data_root_path, outdir_root
 
 
 @app.cell(hide_code=True)
@@ -298,14 +298,14 @@ def _(mo):
 @app.cell
 def load_h5_counts(
     ad,
-    ch1_data_root_path,
+    data_root_path,
     gene_metadata_df,
     gzip,
     igvf_gencode_gtf_path,
     re,
 ):
     try:
-        _h5ad_path = ch1_data_root_path / "rna/h5ad/IGVFFI8944LOEO.h5ad"
+        _h5ad_path = data_root_path / "rna/h5ad/IGVFFI5144GDQB.h5ad"
         adata = ad.read_h5ad(_h5ad_path)
 
         # -------------------------
@@ -421,7 +421,7 @@ def plot_knee_plot(adata, alt, mo, np, pd, qc_metrics_computed):
     _log_idx = np.unique(np.logspace(0, np.log10(len(_ranks) - 1), _n_points).astype(int))
     _knee_df = pd.DataFrame({"rank": _ranks[_log_idx], "n_umis": _counts_sorted[_log_idx]})
 
-    knee_umi_selection = alt.selection_interval(encodings=["y"], value={"y": [1000, 10_000]})
+    knee_umi_selection = alt.selection_interval(encodings=["y"], value={"y": [1500, 30_000]})
 
     _knee_chart = alt.Chart(_knee_df).mark_circle(size=15, color="black").encode(
         x=alt.X("rank:Q", scale=alt.Scale(type="log"), title="Cell rank"),
@@ -450,7 +450,7 @@ def knee_plot_brush_count(knee_chart_ui, knee_full_counts, mo):
     if _selections:
         _lo, _hi = next(iter(_selections.values()))["n_umis"]
     else:
-        _lo, _hi = 1000, 10_000
+        _lo, _hi = 1500, 30_000
 
     _n_in_range = int(((knee_full_counts >= _lo) & (knee_full_counts <= _hi)).sum())
 
@@ -470,9 +470,15 @@ def _(mo):
 def mask_filter_cells(adata, mo, np, pd, qc_metrics_computed):
     mo.stop(not qc_metrics_computed)
 
-    # QC pass mask mirroring the cell-level filters applied below
-    _max_counts_cutoff = 10_000
-    _min_counts_cutoff = 1000
+    # QC pass mask mirroring the cell-level filters applied below.
+    # min_counts_cutoff set to 1500 based on the external final_anno_igvf0.tsv
+    # annotation: its own curated real cells extend down to 578 UMIs (5th
+    # percentile 2,445), so the previous 5000 floor was excluding a real,
+    # externally-validated chunk of cells (~4,864 barcodes). 1500 sits below the
+    # 10th percentile of that population (2,980) while still well above the
+    # empty-droplet noise floor.
+    _max_counts_cutoff = 30_000
+    _min_counts_cutoff = 1_500
 
     adata.obs["pass_min_umi_filter"] = adata.obs["total_counts"] >= _min_counts_cutoff
     adata.obs["pass_max_umi_filter"] = adata.obs["total_counts"] <= _max_counts_cutoff
@@ -878,7 +884,7 @@ def leiden_clustering(adata_flt, mo, neighbors_computed, sc):
     # genuine changes to the input data (QC, CMO assignment, etc.), which will still
     # legitimately shift which cells land in which cluster.
     def _run_leiden(adata):
-        sc.tl.leiden(adata, flavor="igraph", resolution=0.5, n_iterations=2, random_state=0)
+        sc.tl.leiden(adata, flavor="igraph", resolution=0.4, n_iterations=2, random_state=0)
         return True
 
     leiden_computed = _run_leiden(adata_flt)
@@ -1145,9 +1151,9 @@ def _(mo):
 
 
 @app.cell
-def initialize_cmo(ad, adata_flt, ch1_data_root_path):
+def initialize_cmo(ad, adata_flt, data_root_path):
     # path to the cmo counts
-    _cmo_counts_path = ch1_data_root_path / "cmo_counts/adata.h5ad"
+    _cmo_counts_path = data_root_path / "cmo_counts/adata.h5ad"
 
     adata_cmo = ad.read_h5ad(_cmo_counts_path)
 
@@ -1161,11 +1167,53 @@ def initialize_cmo(ad, adata_flt, ch1_data_root_path):
     _cells_in_use = adata_flt.obs_names.intersection(adata_cmo.obs_names.to_list())
     adata_cmo = adata_cmo[_cells_in_use, :]
 
-    # Map each CMO to its timepoint: CMO1-5 = d0, CMO6-10 = d1, ..., CMO21-25 = d4
-    cmo_to_timepoint = {f"CMO{i}": f"d{(i - 1) // 5}" for i in range(1, 26)}
+    # wtc11_endo_d1_5, wtc11_endo_d2_3, and wtc11_endo_d4_2 have no real signal in
+    # this dataset -- confirmed directly against the raw R3 FASTQ (zero
+    # occurrences in a 5M-read sample) and matching final_anno_igvf0.tsv (these
+    # 3 tags are also entirely absent from its own sample_multiseq column). Those
+    # wells simply have no data in this experiment. Drop them here rather than
+    # special-casing them in every downstream cell (geometric mean, thresholds,
+    # assignment) -- their near-zero counts are just background noise, and
+    # percentile-based thresholding would otherwise always manufacture some
+    # spurious "positive" calls for them regardless. See CMO_ISSUE.txt.
+    _dead_cmo_tags = ["wtc11_endo_d1_5", "wtc11_endo_d2_3", "wtc11_endo_d4_2"]
+    adata_cmo = adata_cmo[:, ~adata_cmo.var["gene_name"].isin(_dead_cmo_tags)].copy()
+
+    # CMO tag names here aren't "CMO1".."CMO25" like channel1/channel2; they're
+    # descriptive sample_multiseq names (e.g. "wtc11_endo_d3_2" = timepoint d3,
+    # replicate 2), and the timepoint is always the third underscore-separated
+    # field. Confirmed against data/10x_multi_5_timepoints_mcginnis/cmo_counts/
+    # final_anno_igvf0.tsv's own sample_multiseq column, which has the same
+    # names prefixed with "ansuman-satpathy:". Note the replicate count isn't
+    # uniform across timepoints here (3 for d0, 5 for d1-d4, 20 CMOs remaining
+    # after dropping the 3 dead tags above), unlike channel1/channel2's uniform
+    # 5-per-timepoint/25-CMO panel.
+    cmo_to_timepoint = {name: name.split("_")[2] for name in adata_cmo.var_names}
 
     adata_cmo
     return adata_cmo, cmo_to_timepoint
+
+
+@app.cell
+def _(adata_cmo, np, okabe_ito_palette, pd, plt):
+    # 1. Calculate total counts per CMO
+    col_sums = np.ravel(adata_cmo.X.sum(axis=0))
+
+    # 2. Pair with CMO names and sort values
+    cmo_counts = pd.Series(col_sums, index=adata_cmo.var_names).sort_values(ascending=True)
+
+    # 3. Plot horizontal bar chart
+    plt.figure(figsize=(10, max(4, len(cmo_counts) * 0.35)))  # Scales height based on number of CMOs
+    plt.barh(cmo_counts.index, cmo_counts.values, color=okabe_ito_palette[0], edgecolor='black')
+
+    plt.title('Total Counts per CMO', fontsize=14)
+    plt.xlabel('Total Counts', fontsize=12)
+    plt.ylabel('CMO Name', fontsize=12)
+    plt.grid(axis='x', linestyle='--', alpha=0.7)
+
+    plt.tight_layout()
+    plt.show()
+    return
 
 
 @app.cell
@@ -1173,10 +1221,13 @@ def cmo_clr_normalization(adata_cmo, np):
     _cmo = adata_cmo.X
     _cmo = _cmo.toarray() if hasattr(_cmo, "toarray") else np.asarray(_cmo)
 
-    # 1. Compute Seurat-style geometric mean per cell across the 25 features
-    # Seurat sums log1p of non-zero values, divides by total features (25), then takes exp
+    # 1. Compute Seurat-style geometric mean per cell across all CMO features
+    # Seurat sums log1p of non-zero values, divides by total features, then takes exp.
+    # Divide by the actual panel size (_cmo.shape[1]) -- 20 CMOs after
+    # initialize_cmo drops the 3 dead tags (wtc11_endo_d1_5, d2_3, d4_2; see
+    # CMO_ISSUE.txt), not channel1/channel2's uniform 25.
     _log_counts = np.log1p(np.where(_cmo > 0, _cmo, 0))
-    _gm = np.exp(np.sum(_log_counts, axis=1) / 25)
+    _gm = np.exp(np.sum(_log_counts, axis=1) / _cmo.shape[1])
 
     # 2. Divide raw counts by the geometric mean, then apply log1p
     clr = np.log1p(_cmo / _gm[:, None])
@@ -1185,14 +1236,46 @@ def cmo_clr_normalization(adata_cmo, np):
 
 @app.cell
 def find_cmo_thresholds(clr, np):
-    # which quantile to use as cutoff
-    positive_quantile_threshold = 0.95
-    # get the per tag cutoff
-    thresholds = np.quantile(clr, positive_quantile_threshold, axis=0)
-    # apply the filter
-    positive = clr > thresholds
+    # Per-tag Gaussian Mixture Model on each tag's own CLR distribution, using a
+    # shared posterior-probability cutoff instead of (a) a single global CLR
+    # quantile (previously 0.95) shared across all 20 CMOs, or (b) each tag's own
+    # individually-optimal split (posterior > 0.5). (b) validates every tag
+    # one-vs-rest in isolation and ignores that a cell only counts as a true
+    # Singlet if exactly one of 20 simultaneous per-tag tests fires: at
+    # posterior > 0.5 that inflated the doublet rate so much (n_pos>=2 for
+    # roughly half of adata_flt) that overlap with final_anno_igvf0.tsv barely
+    # improved over the old approach (70.0%). Sweeping one SHARED posterior
+    # cutoff across all tags (still tag-adaptive -- each tag keeps its own GMM
+    # shape) found a real joint optimum around 0.9999: 78.2% IGVF0 overlap, 81.0%
+    # concordance -- beating both the old global-quantile peak (75.1% overlap /
+    # 81.4% concordance at quantile 0.94) and the naive per-tag GMM default
+    # (70.0% / 79.8%).
+    positive_posterior_cutoff = 0.9999
+
+    from sklearn.mixture import GaussianMixture
+
+    def _gmm_fit_column(values):
+        _gmm = GaussianMixture(n_components=2, random_state=0, n_init=3)
+        _gmm.fit(values.reshape(-1, 1))
+        _high = int(np.argmax(_gmm.means_.flatten()))
+        _probs_high = _gmm.predict_proba(values.reshape(-1, 1))[:, _high]
+        _is_positive = _probs_high > positive_posterior_cutoff
+
+        # Grid-crossing approximation of the decision boundary at the same
+        # cutoff, for display only (cmo_threshold_vs_assignment) -- classification
+        # itself uses _is_positive directly, not this reconstructed value.
+        _grid = np.linspace(values.min(), values.max(), 2000)
+        _grid_probs_high = _gmm.predict_proba(_grid.reshape(-1, 1))[:, _high]
+        _crossed = np.flatnonzero(_grid_probs_high >= positive_posterior_cutoff)
+        _boundary = _grid[_crossed[0]] if len(_crossed) else values.max()
+        return _is_positive, _boundary
+
+    _gmm_results = [_gmm_fit_column(clr[:, _col]) for _col in range(clr.shape[1])]
+    positive = np.column_stack([_r[0] for _r in _gmm_results])
+    thresholds = np.array([_r[1] for _r in _gmm_results])
     n_pos = positive.sum(axis=1)
-    return n_pos, positive, positive_quantile_threshold, thresholds
+
+    return n_pos, positive, thresholds
 
 
 @app.cell
@@ -1287,7 +1370,7 @@ def cmo_threshold_vs_assignment(
     _y_domain = [_cmo_summary["n_assigned"].min() - _y_pad, _cmo_summary["n_assigned"].max() + _y_pad]
 
     _scatter_points = alt.Chart(_cmo_summary_filtered).mark_circle(size=100, opacity=0.9, stroke="black", strokeWidth=0.5).encode(
-        x=alt.X("threshold:Q", title="CLR detection threshold (95th percentile)", scale=alt.Scale(domain=_x_domain)),
+        x=alt.X("threshold:Q", title="CLR detection threshold (per-tag GMM boundary)", scale=alt.Scale(domain=_x_domain)),
         y=alt.Y("n_assigned:Q", title="Number of barcodes assigned to this CMO", scale=alt.Scale(domain=_y_domain)),
         color=alt.Color("timepoint:N", scale=_timepoint_scale),
         tooltip=["cmo", "threshold", "n_assigned", "timepoint"],
@@ -1498,9 +1581,11 @@ def cmo_doublet_pair_confounding(
     ).configure_view(strokeWidth=0)
 
     # Same matrix, normalized by how many possible CMO pairs exist in each cell --
-    # same-timepoint cells only have C(5,2)=10 possible pairs (5 CMOs per
-    # timepoint), while cross-timepoint cells have 5x5=25, so raw counts alone
-    # make cross-timepoint pairing look inflated just from having more combinations.
+    # same-timepoint cells have C(n,2) possible pairs, where n is that
+    # timepoint's own CMO count (not uniform across timepoints here: 3 for d0,
+    # 5 for d1-d4), while cross-timepoint cells have n_a * n_b, so raw counts
+    # alone make cross-timepoint pairing look inflated just from having more
+    # combinations, and from d0's smaller panel giving it fewer possible pairs.
     _cmos_per_timepoint = {
         t: [c for c in adata_cmo.var["gene_name"] if cmo_to_timepoint[c] == t] for t in _timepoint_order
     }
@@ -1555,23 +1640,215 @@ def plot_cmo_assignment_counts(
     cmo_assignment_computed,
     cmo_to_timepoint,
     ec_diff_palette,
+    np,
+    pd,
     plt,
 ):
     cmo_assignment_computed  # ran after CMO tags were assigned
 
-    # Number of barcodes assigned (hash_ID) to each CMO
-    _cmo_order = list(adata_cmo.var["gene_name"]) + ["Negative"]
-    _counts = adata_flt.obs["cmo_tag_scanpy"].value_counts().reindex(_cmo_order)
+    # Number of barcodes assigned (hash_ID) to each CMO. Uses the threshold-based
+    # call (cmo_positive_tags_scanpy, restricted to Singlets) rather than the raw
+    # argmax tag (cmo_tag_scanpy) -- wtc11_endo_d1_4 has an abnormally elevated
+    # background across nearly every cell in this dataset, so it wins the argmax
+    # comparison for huge numbers of barcodes that don\'t actually clear its
+    # threshold, making cmo_tag_scanpy misleadingly show ~0 barcodes for CMOs
+    # like wtc11_endo_d0_1 that are actually correctly Singlet-called via
+    # thresholding. Restricted to real CMO tags only -- Negative and Doublet
+    # aren\'t attributable to one CMO, so they\'re dropped from this per-CMO view
+    # rather than shown as their own bars.
+    _cmo_order = list(adata_cmo.var["gene_name"])
+    _display_tag = np.where(
+        adata_flt.obs["cmo_status_scanpy"] == "Singlet",
+        adata_flt.obs["cmo_positive_tags_scanpy"],
+        adata_flt.obs["cmo_status_scanpy"],
+    )
+    _counts = pd.Series(_display_tag).value_counts().reindex(_cmo_order)
     _colors = [ec_diff_palette[cmo_to_timepoint.get(c, "Unassigned")] for c in _counts.index]
 
     plt.figure(figsize=(10, 5))
     plt.bar(_counts.index, _counts.values, color=_colors)
     plt.xlabel("CMO")
     plt.ylabel("Number of barcodes")
-    plt.title("Barcodes assigned per CMO")
+    plt.title("Barcodes assigned per CMO (Singlets only)")
     plt.xticks(rotation=90)
     plt.tight_layout()
     plt.gcf()
+    return
+
+
+@app.cell(hide_code=True)
+def igvf_dataset0_intro(mo):
+    mo.md(r"""
+    ### External reference: IGVF Dataset0 annotation
+
+    Before running this notebook's own CMO hash classification, it's worth checking an independent reference: `data/10x_multi_5_timepoints_mcginnis/cmo_counts/final_anno_igvf0.tsv`, Chris McGinnis's own pre-computed MULTI-seq sample assignment and cell-type annotation for this dataset ("IGVF Dataset0"). This is useful context given the CMO hash classification below currently produces a heavily skewed result (see CMO_ISSUE.txt) -- this file shows what a healthy, roughly balanced classification looks like for comparison.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def igvf_dataset0_load(data_root_path, pd):
+    igvf_dataset0_anno_path = data_root_path / "cmo_counts/final_anno_igvf0.tsv"
+    igvf_dataset0_anno = pd.read_csv(igvf_dataset0_anno_path, sep="\t")
+
+    # Match against adata_flt's obs_names, which carry a "_<sample accession>"
+    # suffix instead of cellBC's "_CharacterizationMcGinnis_Dataset0" suffix.
+    igvf_dataset0_anno["barcode_raw"] = igvf_dataset0_anno["cellBC"].str.split("_", n=1).str[0]
+    igvf_dataset0_anno["sample_multiseq_clean"] = igvf_dataset0_anno["sample_multiseq"].str.replace("ansuman-satpathy:", "", regex=False)
+    igvf_dataset0_anno["timepoint"] = igvf_dataset0_anno["sample_multiseq_clean"].str.split("_").str[2]
+    return (igvf_dataset0_anno,)
+
+
+@app.cell(hide_code=True)
+def igvf_dataset0_cmo_assignment_counts(
+    adata_cmo,
+    cmo_to_timepoint,
+    ec_diff_palette,
+    igvf_dataset0_anno,
+    plt,
+):
+    # Same style as plot_cmo_assignment_counts below, but using the external
+    # igvf_dataset0_anno (sample_multiseq) assignment instead of this notebook's
+    # own CMO hash classification -- a reference point for what a healthy,
+    # roughly even per-CMO distribution looks like.
+    _cmo_order = list(adata_cmo.var["gene_name"])
+    _counts = igvf_dataset0_anno["sample_multiseq_clean"].value_counts().reindex(_cmo_order)
+    _colors = [ec_diff_palette[cmo_to_timepoint.get(c, "Unassigned")] for c in _counts.index]
+
+    plt.figure(figsize=(10, 5))
+    plt.bar(_counts.index, _counts.values, color=_colors)
+    plt.xlabel("CMO (sample_multiseq)")
+    plt.ylabel("Number of barcodes")
+    plt.title("IGVF Dataset0 annotation: barcodes assigned per CMO")
+    plt.xticks(rotation=90)
+    plt.tight_layout()
+    plt.gcf()
+    return
+
+
+@app.cell(hide_code=True)
+def igvf_dataset0_confusion_matrix(
+    adata_flt,
+    alt,
+    cmo_assignment_computed,
+    igvf_dataset0_anno,
+    mo,
+    np,
+    pd,
+):
+    cmo_assignment_computed  # ran after CMO tags were assigned
+
+    # Confusion matrix: external ground truth (igvf_dataset0's own
+    # sample_multiseq timepoint) vs. this notebook's own RAW CMO assignment
+    # (timepoint_scanpy). Uses timepoint_scanpy, not rescued_cmo_tag --
+    # rescued_cmo_tag folds in RNA-cluster-consensus info for rescued Negatives,
+    # which isn\'t a clean test of CMO-quantification agreement on its own.
+    # timepoint_scanpy already has explicit "Negative"/"Doublet" string values
+    # (not NaN) for non-Singlet calls, so nothing gets silently dropped by
+    # pd.crosstab.
+    _adata_flt_raw_to_full = pd.Series(adata_flt.obs_names, index=adata_flt.obs_names.str.split("_", n=1).str[0])
+    _matched = igvf_dataset0_anno[igvf_dataset0_anno["barcode_raw"].isin(_adata_flt_raw_to_full.index)].copy()
+    _matched["obs_name"] = _adata_flt_raw_to_full.loc[_matched["barcode_raw"]].to_numpy()
+
+    _timepoint_order = ["d0", "d1", "d2", "d3", "d4"]
+    _sub_obs = adata_flt.obs.loc[_matched["obs_name"]]
+
+    _cm = pd.crosstab(_matched["timepoint"].to_numpy(), _sub_obs["timepoint_scanpy"].astype(str).to_numpy())
+    _col_order = _timepoint_order + ["Negative", "Doublet"]
+    _cm = _cm.reindex(index=_timepoint_order, columns=_col_order, fill_value=0)
+
+    # Match rate over the FULL matched population: Negative/Doublet-bucketed
+    # barcodes count as non-matches, so this is an honest denominator.
+    _match_rate = np.diag(_cm[_timepoint_order].to_numpy()).sum() / _cm.to_numpy().sum()
+
+    _cm_long = _cm.reset_index().rename(columns={"row_0": "igvf_dataset0_timepoint"}).melt(
+        id_vars="igvf_dataset0_timepoint", var_name="cmo_assignment", value_name="n_barcodes"
+    )
+
+    _heatmap = alt.Chart(_cm_long).mark_rect().encode(
+        x=alt.X("cmo_assignment:N", sort=_col_order, title="this notebook\'s own CMO assignment (timepoint_scanpy)"),
+        y=alt.Y("igvf_dataset0_timepoint:N", sort=_timepoint_order, title="IGVF Dataset0 timepoint"),
+        color=alt.Color("n_barcodes:Q", scale=alt.Scale(scheme="cividis"), title="Barcodes"),
+        tooltip=["igvf_dataset0_timepoint", "cmo_assignment", "n_barcodes"],
+    )
+    _labels = alt.Chart(_cm_long).mark_text(fontSize=11).encode(
+        x=alt.X("cmo_assignment:N", sort=_col_order),
+        y=alt.Y("igvf_dataset0_timepoint:N", sort=_timepoint_order),
+        text=alt.Text("n_barcodes:Q", format=","),
+        color=alt.condition(alt.datum.n_barcodes > _cm_long["n_barcodes"].max() / 2, alt.value("black"), alt.value("white")),
+    )
+    _chart = (_heatmap + _labels).properties(
+        title=f"IGVF Dataset0 timepoint vs. this notebook\'s raw CMO assignment (match rate: {_match_rate:.1%}, n={_cm.to_numpy().sum():,})",
+        width=460, height=340,
+    ).configure_view(strokeWidth=0)
+
+    mo.vstack([_chart, mo.md(_cm.to_markdown())])
+    return
+
+
+@app.cell(hide_code=True)
+def igvf_dataset0_cmo_signal_check(
+    adata_cmo,
+    adata_flt,
+    alt,
+    clr,
+    igvf_dataset0_anno,
+    mo,
+    np,
+    pd,
+    thresholds,
+):
+    # Does this notebook's own CLR-normalized CMO signal for wtc11_endo_d0_1
+    # actually separate the barcodes the external IGVF Dataset0 annotation
+    # assigns to that exact sample from everyone else?
+    from scipy.stats import gaussian_kde as _gaussian_kde_igvf0
+
+    _target_cmo = "wtc11_endo_d0_1"
+    _col_idx = list(adata_cmo.var["gene_name"]).index(_target_cmo)
+
+    _adata_flt_raw_to_full = pd.Series(adata_flt.obs_names, index=adata_flt.obs_names.str.split("_", n=1).str[0])
+    _target_barcodes_raw = igvf_dataset0_anno.loc[
+        igvf_dataset0_anno["sample_multiseq_clean"] == _target_cmo, "barcode_raw"
+    ]
+    _matched_full = _adata_flt_raw_to_full.reindex(_target_barcodes_raw).dropna()
+    _in_group_mask = adata_cmo.obs_names.isin(_matched_full.to_numpy())
+
+    _vals_in = clr[_in_group_mask, _col_idx]
+    _vals_out = clr[~_in_group_mask, _col_idx]
+
+    _grid = np.linspace(0, max(_vals_in.max(), _vals_out.max()), 300)
+    _density_df = pd.DataFrame({
+        "clr_value": np.tile(_grid, 2),
+        "density": np.concatenate([
+            _gaussian_kde_igvf0(_vals_in)(_grid),
+            _gaussian_kde_igvf0(_vals_out)(_grid),
+        ]),
+        "group": [f"IGVF0 {_target_cmo} (n={int(_in_group_mask.sum()):,})"] * len(_grid)
+            + [f"Rest (n={int((~_in_group_mask).sum()):,})"] * len(_grid),
+    })
+
+    _density_chart = alt.Chart(_density_df).mark_line(interpolate="monotone").encode(
+        x=alt.X("clr_value:Q", title=f"CLR-normalized {_target_cmo} signal"),
+        y=alt.Y("density:Q", title="Density"),
+        color=alt.Color("group:N", title=None),
+    )
+    _threshold_rule = alt.Chart(pd.DataFrame({"x": [thresholds[_col_idx]]})).mark_rule(
+        strokeDash=[4, 4], color="black"
+    ).encode(x="x:Q")
+
+    _chart = (_density_chart + _threshold_rule).properties(
+        title=f"CLR-normalized {_target_cmo} signal: IGVF0-assigned vs. rest (dashed = this notebook's own detection threshold)",
+        width=550, height=350,
+    ).configure_view(strokeWidth=0)
+
+    mo.vstack([
+        _chart,
+        mo.md(
+            f"**{_target_cmo}** -- threshold = {thresholds[_col_idx]:.3f} | "
+            f"IGVF0-assigned: median = {np.median(_vals_in):.3f}, mean = {_vals_in.mean():.3f} | "
+            f"rest: median = {np.median(_vals_out):.3f}, mean = {_vals_out.mean():.3f}"
+        ),
+    ])
     return
 
 
@@ -1852,10 +2129,154 @@ def umap_by_cmo_hashing_altair(
 
 
 @app.cell(hide_code=True)
-def _(mo):
+def final_round_intro(mo):
     mo.md(r"""
     # Final round of quality control
     """)
+    return
+
+
+@app.cell(hide_code=True)
+def create_qc_passing_adata(
+    adata_flt,
+    alt,
+    cmo_assignment_computed,
+    ec_diff_palette,
+    igvf_dataset0_anno,
+    pd,
+):
+    cmo_assignment_computed  # ran after CMO tags were assigned
+
+    # Direct per-cell QC filter only, no cluster-based exclusion here (clustering
+    # happens after this filter, not before it): keep barcodes that are both a
+    # Scrublet singlet and a CMO singlet.
+    _is_scrublet_singlet = ~adata_flt.obs["scrublet_predicted_doublet"]
+    _is_cmo_singlet = adata_flt.obs["cmo_status_scanpy"] == "Singlet"
+    _qc_pass_mask = _is_scrublet_singlet & _is_cmo_singlet
+
+    adata_clean = adata_flt[_qc_pass_mask].copy()
+
+    _n_total = adata_flt.n_obs
+    _n_pass = adata_clean.n_obs
+    print(f"Scrublet singlet: {int(_is_scrublet_singlet.sum()):,} / {_n_total:,}")
+    print(f"CMO singlet: {int(_is_cmo_singlet.sum()):,} / {_n_total:,}")
+    print(f"Both (kept in adata_clean): {_n_pass:,} / {_n_total:,} ({_n_pass / _n_total:.1%})")
+
+    _timepoint_order = ["d0", "d1", "d2", "d3", "d4"]
+    _tag_counts = adata_clean.obs["timepoint_scanpy"].value_counts().reindex(_timepoint_order).reset_index()
+    _tag_counts.columns = ["timepoint", "n_barcodes"]
+
+    _bar_colors = {t: ec_diff_palette.get(t, ec_diff_palette["Unassigned"]) for t in _timepoint_order}
+    _bar_chart = alt.Chart(_tag_counts).mark_bar().encode(
+        y=alt.Y("timepoint:N", sort=_timepoint_order, title="Timepoint"),
+        x=alt.X("n_barcodes:Q", title="Number of barcodes"),
+        color=alt.Color(
+            "timepoint:N",
+            scale=alt.Scale(domain=list(_bar_colors), range=list(_bar_colors.values())),
+            legend=None,
+        ),
+    )
+    _bar_labels = alt.Chart(_tag_counts).mark_text(align="left", dx=3, fontSize=9).encode(
+        y=alt.Y("timepoint:N", sort=_timepoint_order),
+        x=alt.X("n_barcodes:Q"),
+        text=alt.Text("n_barcodes:Q", format=","),
+    )
+    _timepoint_chart = (_bar_chart + _bar_labels).properties(
+        title=["Barcodes per timepoint (adata_clean: Scrublet singlet + CMO singlet)", f"n = {_n_pass:,} barcodes total"],
+        width=480, height=300,
+    ).configure_view(strokeWidth=0)
+
+    # Concordance with IGVF0's independent annotation, restricted to adata_clean.
+    _raw_to_full = pd.Series(adata_clean.obs_names, index=adata_clean.obs_names.str.split("_", n=1).str[0])
+    _matched = igvf_dataset0_anno[igvf_dataset0_anno["barcode_raw"].isin(_raw_to_full.index)].copy()
+    _matched["obs_name"] = _raw_to_full.loc[_matched["barcode_raw"]].to_numpy()
+    _matched["our_timepoint"] = adata_clean.obs.loc[_matched["obs_name"], "timepoint_scanpy"].to_numpy()
+    _agree = _matched["timepoint"] == _matched["our_timepoint"]
+
+    _n_igvf0_total = len(igvf_dataset0_anno)
+    _n_igvf0_matched = len(_matched)
+    print(f"IGVF0 barcodes in common with adata_clean: {_n_igvf0_matched:,} / {_n_igvf0_total:,} ({_n_igvf0_matched / _n_igvf0_total:.1%})")
+
+    # Why the rest were lost: not present in adata_flt at all (failed the lenient
+    # QC / counts cutoff, or no barcode overlap), vs. present but excluded by the
+    # Scrublet-singlet / CMO-singlet filter.
+    _raw_to_flt = pd.Series(adata_flt.obs_names, index=adata_flt.obs_names.str.split("_", n=1).str[0])
+    _in_adata_flt = igvf_dataset0_anno["barcode_raw"].isin(_raw_to_flt.index)
+    _n_not_in_flt = int((~_in_adata_flt).sum())
+
+    _present = igvf_dataset0_anno[_in_adata_flt].copy()
+    _present["obs_name"] = _raw_to_flt.loc[_present["barcode_raw"]].to_numpy()
+    _present_obs = adata_flt.obs.loc[_present["obs_name"]]
+    _present["scrublet_doublet"] = _present_obs["scrublet_predicted_doublet"].to_numpy()
+    _present["cmo_singlet"] = (_present_obs["cmo_status_scanpy"] == "Singlet").to_numpy()
+    _lost_present = _present[~(~_present["scrublet_doublet"] & _present["cmo_singlet"])]
+
+    print(f"\nOf the {_n_igvf0_total - _n_igvf0_matched:,} lost barcodes:")
+    print(f"  Not in adata_flt at all (failed lenient QC / counts cutoff, or no overlap): {_n_not_in_flt:,}")
+    print(f"  In adata_flt but Scrublet-predicted doublet (CMO singlet otherwise): {int((_lost_present['scrublet_doublet'] & _lost_present['cmo_singlet']).sum()):,}")
+    print(f"  In adata_flt but CMO not singlet (Scrublet singlet otherwise): {int((~_lost_present['scrublet_doublet'] & ~_lost_present['cmo_singlet']).sum()):,}")
+    print(f"  In adata_flt but failed both filters: {int((_lost_present['scrublet_doublet'] & ~_lost_present['cmo_singlet']).sum()):,}")
+
+    _igvf0_concordance = pd.crosstab(
+        _matched["timepoint"], _matched["our_timepoint"]
+    ).reindex(index=_timepoint_order, columns=_timepoint_order, fill_value=0)
+
+    print(f"IGVF0 concordance: {int(_agree.sum()):,} / {len(_matched):,} matched barcodes agree on timepoint ({_agree.mean():.1%}).")
+    print(_igvf0_concordance.to_string())
+
+    _timepoint_chart
+
+    return (adata_clean,)
+
+
+@app.cell
+def cluster_adata_clean(adata_clean, sc, scclr):
+    def _run_clustering_pipeline(adata):
+        scclr.pp.pflog(adata, target="auto")
+        sc.pp.highly_variable_genes(adata, layer="pflog", n_top_genes=2000)
+        _ncomps = 50
+        _ncv = 2 * _ncomps + 1
+        scclr.tl.pca(adata, n_comps=_ncomps, ncv=_ncv)
+        sc.pp.neighbors(adata, random_state=0)
+        sc.tl.leiden(adata, flavor="igraph", resolution=0.25, n_iterations=2, random_state=0)
+        sc.tl.umap(adata)
+        return True
+
+    adata_clean_clustering_computed = _run_clustering_pipeline(adata_clean)
+
+    return (adata_clean_clustering_computed,)
+
+
+@app.cell
+def umap_adata_clean(
+    adata_clean,
+    adata_clean_clustering_computed,
+    ec_diff_palette,
+    sc,
+):
+    adata_clean_clustering_computed  # ran after normalization, HVG, PCA, neighbors, leiden, and UMAP
+
+    sc.pl.umap(
+        adata_clean,
+        color=["leiden", "pct_counts_mt"],
+        cmap="cividis",
+        ncols=2,
+        size=5,
+        title=["UMAP colored by leiden cluster", "UMAP colored by %mito"],
+    )
+
+    # Separate call: timepoint_scanpy needs the timepoint-specific ec_diff_palette,
+    # not scanpy's default categorical palette. adata_clean is already restricted
+    # to CMO singlets, so timepoint_scanpy is a clean d0-d4 label here (no
+    # Negative/Doublet values to worry about).
+    sc.pl.umap(
+        adata_clean,
+        color="timepoint_scanpy",
+        palette=ec_diff_palette,
+        size=5,
+        title="UMAP colored by timepoint",
+    )
+
     return
 
 
@@ -1867,712 +2288,255 @@ def _(mo):
     return
 
 
-@app.cell(hide_code=True)
-def leiden_doublet_overview(
-    adata_flt,
+@app.cell
+def cluster_summary_adata_clean(
+    adata_clean,
+    adata_clean_clustering_computed,
     cmo_assignment_computed,
-    leiden_computed,
 ):
     cmo_assignment_computed  # ran after CMO tags were assigned
-    leiden_computed  # ran after leiden clustering
+    adata_clean_clustering_computed  # ran after leiden clustering on adata_clean
 
-    # Per-cluster overview: does the CMO-hashing doublet rate track the Scrublet doublet rate?
-    leiden_doublet_summary = adata_flt.obs.groupby("leiden", observed=True).agg(
+    # Per-cluster overview: composition of the new clusters computed directly on
+    # the already-filtered adata_clean (Scrublet-singlet + CMO-singlet
+    # survivors). No more doublet-rate columns here since adata_clean has none by
+    # construction -- this is now a plain per-cluster QC + timepoint-composition
+    # summary, used to spot confounders in the clustering itself.
+    cluster_summary_adata_clean = adata_clean.obs.groupby("leiden", observed=True).agg(
         n_cells=("leiden", "size"),
-        pct_cmo_singlet=("cmo_status_scanpy", lambda s: (s == "Singlet").mean() * 100),
-        pct_cmo_doublet=("cmo_status_scanpy", lambda s: (s == "Doublet").mean() * 100),
-        pct_cmo_negative=("cmo_status_scanpy", lambda s: (s == "Negative").mean() * 100),
-        pct_scrublet_doublet=("scrublet_predicted_doublet", lambda s: s.mean() * 100),
         median_mito=("pct_counts_mt", "median"),
         median_counts=("total_counts", "median"),
     ).round(1)
 
-    leiden_doublet_summary[
-        ["n_cells", "pct_scrublet_doublet", "pct_cmo_doublet", "median_mito"]
-    ].sort_values("pct_cmo_doublet", ascending=False)
-    return (leiden_doublet_summary,)
+    _timepoint_order = ["d0", "d1", "d2", "d3", "d4"]
+    _timepoint_pct = (
+        adata_clean.obs.groupby("leiden", observed=True)["timepoint_scanpy"]
+        .value_counts(normalize=True)
+        .unstack(fill_value=0)
+        .reindex(columns=_timepoint_order, fill_value=0) * 100
+    ).round(1)
+    _timepoint_pct.columns = [f"pct_{_tp}" for _tp in _timepoint_pct.columns]
 
+    cluster_summary_adata_clean = cluster_summary_adata_clean.join(_timepoint_pct)
 
-@app.cell(hide_code=True)
-def doublet_cluster_investigation_intro(
-    doublet_dominated_clusters,
-    leiden_doublet_summary,
-    mo,
-):
-    _dd_sorted = sorted(doublet_dominated_clusters, key=int)
-    _dd_list = ", ".join(f"**{c}**" for c in _dd_sorted)
-    _cmo_lo, _cmo_hi = leiden_doublet_summary.loc[_dd_sorted, "pct_cmo_doublet"].agg(["min", "max"])
-    _scrub_lo, _scrub_hi = leiden_doublet_summary.loc[_dd_sorted, "pct_scrublet_doublet"].agg(["min", "max"])
+    cluster_summary_adata_clean[
+        ["n_cells", "median_counts", "median_mito", *_timepoint_pct.columns]
+    ].sort_values("n_cells", ascending=False)
 
-    mo.md(f"""
-    ## Doublet-dominated cluster investigation
-
-    Both methods agree that clusters {_dd_list} are heavily doublet-dominated (CMO hashing {_cmo_lo:.1f}-{_cmo_hi:.1f}%, Scrublet {_scrub_lo:.1f}-{_scrub_hi:.1f}%).
-    """)
-    return
-
-
-@app.cell
-def doublet_pct_forest_plot_intro(mo):
-    mo.md(r"""
-    ### Doublet % by threshold: is the confounding real?
-
-    In an ideal scenario, raising the detection threshold should mostly turn "Singlets" into "Negatives", not turn "Doublets" into something else, since a genuine doublet's second CMO signal should be comfortably real, not threshold-sensitive.
-
-    The plot below shows one point per cluster group per threshold, the mean %doublet across the clusters in that group, with a thick bar spanning the observed min-max range across those same clusters. A dashed black line marks the "random" expectation. Since each CMO's threshold is defined as its own (1 minus quantile) upper tail, a cell with zero real signal still has that per-CMO chance of a false positive. Under independence, "doublet" (2 or more of 25 CMOs positive) follows Binomial(n=25, p=1-quantile), i.e. P(X>=2), with no free parameters. A cluster sitting well above this line has real confounding, not just the baseline false-positive rate baked into using a 25-CMO panel at this quantile.
-    """)
     return
 
 
 @app.cell(hide_code=True)
-def doublet_pct_forest_plot(
-    adata_flt,
-    alt,
-    clr,
-    doublet_dominated_clusters,
-    np,
-    okabe_ito_palette,
-    pd,
-):
-    # See doublet_pct_forest_plot_intro above for the interpretation.
-    from scipy.stats import binom
-
-    def _pct_doublet_by_quantile(cluster_id):
-        _mask = (adata_flt.obs["leiden"] == cluster_id).to_numpy()
-        _clr_cluster = clr[_mask]
-        _rows = []
-        for _q in np.round(np.linspace(0.90, 0.99, 10), 4):
-            _t = np.quantile(clr, _q, axis=0)
-            _pos = _clr_cluster > _t
-            _n_pos = _pos.sum(axis=1)
-            _rows.append({"quantile": _q, "pct_doublet": (_n_pos > 1).mean() * 100})
-        return pd.DataFrame(_rows)
-
-    _all_clusters = sorted(adata_flt.obs["leiden"].astype(str).unique(), key=int)
-    _other_clusters = [c for c in _all_clusters if c not in doublet_dominated_clusters]
-    _dd_label = f"Doublet-dominated ({', '.join(doublet_dominated_clusters)})"
-    _other_label = f"Other clusters ({', '.join(_other_clusters)})"
-
-    _frames = []
-    for _cl in _all_clusters:
-        _df = _pct_doublet_by_quantile(_cl)
-        _df["cluster"] = _cl
-        _df["group"] = _dd_label if _cl in doublet_dominated_clusters else _other_label
-        _frames.append(_df)
-    _doublet_long = pd.concat(_frames, ignore_index=True)
-
-    _group_colors = {_dd_label: okabe_ito_palette[8], _other_label: okabe_ito_palette[0]}
-    _group_order = list(_group_colors)
-
-    # Point at the mean, bar spanning the observed min-max range, computed
-    # across the clusters in each group.
-    _summary = _doublet_long.groupby(["quantile", "group"], as_index=False)["pct_doublet"].agg(
-        mean="mean",
-        lo="min",
-        hi="max",
-    )
-
-    _n_cmos = clr.shape[1]
-    _quantiles = np.round(np.linspace(0.90, 0.99, 10), 4)
-    _null_df = pd.DataFrame({
-        "quantile": _quantiles,
-        "pct_doublet_null": binom.sf(1, _n_cmos, 1 - _quantiles) * 100,
-    })
-
-    _null_line = alt.Chart(_null_df).mark_line(
-        strokeDash=[4, 4], color="black", strokeWidth=2, point=alt.OverlayMarkDef(color="black", size=40),
-    ).encode(
-        x=alt.X("quantile:O", title="CLR detection quantile", axis=alt.Axis(labelAngle=0)),
-        y=alt.Y("pct_doublet_null:Q"),
-    )
-
-    _error_bars = alt.Chart(_summary).mark_rule(strokeWidth=2).encode(
-        x=alt.X("quantile:O", title="CLR detection quantile", axis=alt.Axis(labelAngle=0)),
-        y=alt.Y("lo:Q", title="% of cluster called Doublet", scale=alt.Scale(domain=[0, 100])),
-        y2="hi:Q",
-        color=alt.Color(
-            "group:N",
-            scale=alt.Scale(domain=_group_order, range=list(_group_colors.values())),
-            legend=alt.Legend(title="Cluster group"),
-        ),
-    )
-
-    _points = alt.Chart(_summary).mark_point(size=100, filled=True).encode(
-        x=alt.X("quantile:O", axis=alt.Axis(labelAngle=0)),
-        y=alt.Y("mean:Q"),
-        color=alt.Color("group:N", scale=alt.Scale(domain=_group_order, range=list(_group_colors.values())), legend=None),
-        tooltip=["quantile", "group", alt.Tooltip("mean:Q", format=".1f"), alt.Tooltip("lo:Q", format=".1f"), alt.Tooltip("hi:Q", format=".1f")],
-    )
-
-    _chart = (_null_line + _error_bars + _points).properties(
-        title="Doublet %: mean and min-max range across clusters, vs. the random (binomial) expectation",
-        width=550, height=400,
-    ).configure_view(strokeWidth=0)
-
-    _chart
-    return
-
-
-@app.cell
-def n_pos_distribution_vs_null_intro(
-    mo,
-    representative_doublet_cluster,
-    representative_well_behaved_cluster,
-):
-    mo.md(f"""
-    ### n_pos distribution vs. the random null
-
-    Does each cluster's distribution of "number of positive CMOs" (n_pos, at the pipeline's actual q=0.95 threshold) match the random/binomial null, Binomial(n=25, p=1-0.95=0.05), or deviate from it?
-
-    Left: cluster {representative_doublet_cluster}, doublet-dominated. Right: cluster {representative_well_behaved_cluster}, well-behaved. Black bars are the empirical distribution, gray bars are the theoretical distribution expected under pure noise (no real CMO signal at all). If a cluster's black bars closely track the gray ones, its doublet calls are largely explained by the baseline false-positive rate of a 25-CMO panel. If they diverge sharply, especially with excess mass at n_pos=2 or higher, that cluster has real confounding beyond what chance alone would produce.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def n_pos_distribution_vs_null(
-    adata_flt,
-    alt,
-    clr,
-    mo,
-    n_pos,
-    okabe_ito_palette,
-    pd,
-    positive_quantile_threshold,
-    representative_doublet_cluster,
-    representative_well_behaved_cluster,
-):
-    # See n_pos_distribution_vs_null_intro above for the interpretation.
-    from scipy.stats import binom as _binom_dist
-
-    _n_cmos_cmp = clr.shape[1]
-    _null_p = 1 - positive_quantile_threshold
-    _max_k = 5
-
-    def _n_pos_comparison(cluster_id):
-        _mask = (adata_flt.obs["leiden"] == cluster_id).to_numpy()
-        _empirical = n_pos[_mask]
-        _emp_counts = pd.Series(_empirical).value_counts(normalize=True).reindex(range(_max_k + 1), fill_value=0) * 100
-        _null_counts = _binom_dist.pmf(range(_max_k + 1), _n_cmos_cmp, _null_p) * 100
-        _df = pd.DataFrame({
-            "n_pos": list(range(_max_k + 1)) * 2,
-            "pct": list(_emp_counts.to_numpy()) + list(_null_counts),
-            "source": ["Empirical"] * (_max_k + 1) + ["Theoretical (random null)"] * (_max_k + 1),
-        })
-        return _df
-
-    _source_colors = {"Empirical": okabe_ito_palette[0], "Theoretical (random null)": okabe_ito_palette[8]}
-
-    def _comparison_chart(cluster_id, title):
-        _df = _n_pos_comparison(cluster_id)
-        _bars = alt.Chart(_df).mark_bar().encode(
-            x=alt.X("n_pos:O", title="Number of positive CMOs", axis=alt.Axis(labelAngle=0)),
-            y=alt.Y("pct:Q", title="% of cells", scale=alt.Scale(domain=[0, 100])),
-            xOffset=alt.XOffset("source:N", sort=list(_source_colors)),
-            color=alt.Color(
-                "source:N",
-                scale=alt.Scale(domain=list(_source_colors), range=list(_source_colors.values())),
-                legend=alt.Legend(title="Distribution"),
-            ),
-        )
-        return _bars.properties(title=title, width=340, height=340).configure_view(strokeWidth=0)
-
-    _chart_rep = _comparison_chart(representative_doublet_cluster, f"Cluster {representative_doublet_cluster} (doublet-dominated)")
-    _chart_well_behaved = _comparison_chart(representative_well_behaved_cluster, f"Cluster {representative_well_behaved_cluster} (well-behaved)")
-
-    def _tight_row(*items):
-        # mo.hstack with widths=None adds no wrapper/flex styling around children,
-        # so block-level chart divs just fill the row (no slack left for
-        # justify-content to redistribute). Build the flex row by hand instead.
-        _items_html = "".join(
-            f'<div style="flex: 0 0 auto;">{mo.as_html(it).text}</div>' for it in items
-        )
-        return mo.Html(f'<div style="display:flex; justify-content:flex-start; gap:1rem;">{_items_html}</div>')
-
-    _tight_row(_chart_rep, _chart_well_behaved)
-    return
-
-
-@app.cell(hide_code=True)
-def doublet_cluster_conclusion(
-    doublet_dominated_clusters,
-    leiden_doublet_summary,
-    mo,
-    representative_doublet_cluster,
-    representative_well_behaved_cluster,
-):
-    _dd_sorted = sorted(doublet_dominated_clusters, key=int)
-    _dd_list = ", ".join(_dd_sorted)
-    _cmo_lo, _cmo_hi = leiden_doublet_summary.loc[_dd_sorted, "pct_cmo_doublet"].agg(["min", "max"])
-    _scrub_lo, _scrub_hi = leiden_doublet_summary.loc[_dd_sorted, "pct_scrublet_doublet"].agg(["min", "max"])
-
-    mo.md(f"""
-    ### Doublet-dominated clusters: conclusions
-
-    1. **Clusters {_dd_list} are pure doublet clusters, trust Scrublet over CMO here.**
-       Both methods agree these {len(_dd_sorted)} clusters are almost entirely doublets: CMO hashing calls {_cmo_lo:.1f}-{_cmo_hi:.1f}% doublet, Scrublet independently calls {_scrub_lo:.1f}-{_scrub_hi:.1f}% doublet.
-
-    2. **Cluster {representative_doublet_cluster}'s doublet calls are genuine confounding, not just noise.**
-       `doublet_pct_forest_plot` shows cluster {representative_doublet_cluster} needs a far stricter threshold than well-behaved clusters to clear its doublets, staying well above the random (binomial) expectation across most of the quantile sweep. `n_pos_distribution_vs_null` confirms this directly: cluster {representative_doublet_cluster}'s distribution of "number of positive CMOs" has substantially more mass at 2 or more than pure chance would produce, Binomial(n=25, p=0.05), unlike cluster {representative_well_behaved_cluster} (a well-behaved cluster), which tracks close to or below the null. This looks like CMO hashing's structural blindness to same-CMO, same-sample, doublets rather than a tunable threshold problem, so we drop these clusters wholesale rather than keep their CMO-labeled singlets.
-    """)
-    return
-
-
-@app.cell
-def high_mito_cluster_selection(
-    adata_flt,
-    doublet_dominated_clusters,
-    leiden_computed,
-):
-    doublet_dominated_clusters  # ran after doublet-dominated clusters were identified
-    leiden_computed  # ran after leiden clustering
-
-    # "Moderately elevated" clusters are picked out via the largest gap in the
-    # sorted per-cluster median %mito among non-doublet-dominated clusters (their
-    # mito elevation already has a separate explanation), rather than a fixed
-    # list, so this stays correct if Leiden renumbers clusters on a future re-run.
-    _median_mito_by_cluster = adata_flt.obs.groupby("leiden", observed=True)["pct_counts_mt"].median()
-    _non_doublet_medians = _median_mito_by_cluster.drop(index=doublet_dominated_clusters).sort_values(ascending=False)
-    _gaps = -_non_doublet_medians.diff().dropna()
-    _split = int(_gaps.to_numpy().argmax()) + 1
-    high_mito_clusters = sorted(_non_doublet_medians.index[:_split].tolist(), key=int)
-
-    high_mito_clusters
-    return (high_mito_clusters,)
-
-
-@app.cell(hide_code=True)
-def high_mito_investigation_intro(
-    adata_flt,
-    doublet_dominated_clusters,
-    high_mito_clusters,
-    mo,
-):
-    _median_by_cluster = adata_flt.obs.groupby("leiden", observed=True)["pct_counts_mt"].median()
-    _lowest_clusters = [c for c in _median_by_cluster.index if c not in high_mito_clusters and c not in doublet_dominated_clusters]
-
-    _elevated_lo, _elevated_hi = _median_by_cluster.loc[high_mito_clusters].agg(["min", "max"])
-    _lowest_lo, _lowest_hi = _median_by_cluster.loc[_lowest_clusters].agg(["min", "max"])
-    _doublet_lo, _doublet_hi = _median_by_cluster.loc[doublet_dominated_clusters].agg(["min", "max"])
-
-    _elevated_list = ", ".join(f"**{c}**" for c in high_mito_clusters)
-
-    mo.md(f"""
-    ## High mito-content cluster investigation
-
-    Clusters {_elevated_list} show moderately elevated %mito ({_elevated_lo:.0f}-{_elevated_hi:.0f}% median) relative to the rest of the dataset ({_lowest_lo:.0f}-{_lowest_hi:.0f}% in the lowest clusters, {_doublet_lo:.0f}-{_doublet_hi:.0f}% in the doublet-dominated clusters). This section asks whether that elevation reflects a stress response or dying/damaged nuclei, or genuine biological variation across real, distinct cell types.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def high_mito_marker_comparison(
-    adata_flt,
-    high_mito_clusters,
-    leiden_computed,
+def mixed_timepoint_clusters_investigation(
+    adata_clean,
+    adata_clean_clustering_computed,
     mo,
     pd,
     sc,
 ):
-    leiden_computed  # ran after leiden clustering
-    high_mito_clusters  # ran after the moderately mito-elevated clusters were identified
+    adata_clean_clustering_computed  # ran after leiden clustering on adata_clean
 
-    # high_mito_clusters are the moderately mito-elevated ones (see
-    # high_mito_investigation_intro). A stress-response or dying-nuclei
-    # explanation predicts their top marker genes should be dominated by
-    # mitochondrially-encoded genes plus a heat-shock/ER-stress chaperone
-    # signature, rather than specific biology.
-    _marker_view = adata_flt.copy()
-    sc.tl.rank_genes_groups(
-        _marker_view, groupby="leiden", groups=high_mito_clusters, reference="rest",
-        method="wilcoxon", layer="pflog", use_raw=False,
-    )
+    # Clusters 3 and 6 are the least timepoint-pure clusters in
+    # cluster_summary_adata_clean (3: 16.6/9.9/18.7/42.9/12.0% across d0-d4; 6:
+    # 6.3/54.4/27.2/11.3/0.8%, also the lowest median_counts of any cluster).
+    # Check whether either reflects a proliferation/cell-cycle-driven clustering
+    # artifact (cells clustering by cycle state rather than lineage/timepoint)
+    # instead of a distinct identity, the same check run on the previous
+    # clustering's mixed clusters.
+    _view = adata_clean.copy()
+    sc.tl.rank_genes_groups(_view, groupby="leiden", groups=["3", "6"], reference="rest", method="wilcoxon", layer="pflog", use_raw=False)
 
     _top_n = 15
     _marker_dfs = {}
-    for _cl in high_mito_clusters:
-        _df = sc.get.rank_genes_groups_df(_marker_view, group=_cl).reset_index(drop=True)
-        _df["gene_symbol"] = _df["names"].map(adata_flt.var["gene_symbol"])
+    for _grp in ["3", "6"]:
+        _df = sc.get.rank_genes_groups_df(_view, group=_grp).reset_index(drop=True)
+        _df["gene_symbol"] = _df["names"].map(adata_clean.var["gene_symbol"])
         _df["rank"] = _df.index + 1
-        _marker_dfs[_cl] = _df
+        _marker_dfs[_grp] = _df
 
-    high_mito_top_markers = pd.DataFrame({_cl: _df.head(_top_n)["gene_symbol"].tolist() for _cl, _df in _marker_dfs.items()})
-    high_mito_top_markers.index = range(1, _top_n + 1)
-    high_mito_top_markers.index.name = "rank"
+    mixed_timepoint_top_markers = pd.DataFrame({_grp: _df.head(_top_n)["gene_symbol"].tolist() for _grp, _df in _marker_dfs.items()})
+    mixed_timepoint_top_markers.index = range(1, _top_n + 1)
+    mixed_timepoint_top_markers.index.name = "rank"
 
-    # Quantitative check: where do mitochondrially-encoded genes and canonical
-    # heat-shock/ER-stress chaperones actually rank in each of these clusters,
-    # out of adata_flt.n_vars total genes? A stress-response/dying-nuclei cluster
-    # would show these near the top with a positive logFC; real biology should
-    # show them unremarkable or even depleted.
-    high_mito_stress_genes = [
+    # Canonical S-phase and G2/M proliferation markers.
+    _cell_cycle_genes = [
+        "MKI67", "TOP2A", "CENPF", "MCM2", "MCM4", "MCM6", "CLSPN", "DTL",
+        "PCNA", "CCNB1", "CCNB2", "CDK1", "AURKA", "AURKB", "BUB1", "TYMS",
+    ]
+    _n_genes = adata_clean.n_vars
+
+    _rows = []
+    for _gene in _cell_cycle_genes:
+        _row = {"gene": _gene}
+        for _grp, _df in _marker_dfs.items():
+            _match = _df.loc[_df["gene_symbol"] == _gene]
+            if len(_match):
+                _row[f"cluster_{_grp}_rank"] = f"{int(_match['rank'].iloc[0]):,} / {_n_genes:,}"
+                _row[f"cluster_{_grp}_logfc"] = round(float(_match["logfoldchanges"].iloc[0]), 2)
+            else:
+                _row[f"cluster_{_grp}_rank"] = "not found"
+                _row[f"cluster_{_grp}_logfc"] = None
+        _rows.append(_row)
+
+    mixed_timepoint_cell_cycle_ranks = pd.DataFrame(_rows).set_index("gene")
+
+    mo.vstack([
+        mo.md("**Top 15 markers, clusters 3 and 6 vs. rest (Wilcoxon, `pflog` layer):**"),
+        mixed_timepoint_top_markers,
+        mo.md(
+            "**Rank and logFC of canonical proliferation/cell-cycle genes in each cluster\'s full ranking "
+            f"(out of {_n_genes:,} genes; low rank + positive logFC would support a cell-cycle-driven cluster):**"
+        ),
+        mixed_timepoint_cell_cycle_ranks,
+    ])
+
+    return
+
+
+@app.cell
+def same_timepoint_mito_split_investigation(
+    adata_clean,
+    adata_clean_clustering_computed,
+    mo,
+    pd,
+    sc,
+):
+    adata_clean_clustering_computed  # ran after leiden clustering on adata_clean
+
+    # Within the same timepoint, cluster_summary_adata_clean shows a striking
+    # mito split: d2 has cluster 1 (0.9% median mito) vs cluster 2 (14.3%), and
+    # d4 has cluster 7 (1.4%) vs cluster 4 (13.9%). Compare each low-mito vs
+    # high-mito pair directly (not vs "rest") to see whether this is genuine
+    # biological heterogeneity within the timepoint or a residual technical
+    # (stress/dying-nuclei) confound.
+    _pairs = {"d2": ("1", "2"), "d4": ("7", "4")}  # timepoint: (low-mito cluster, high-mito cluster)
+
+    _marker_dfs = {}
+    for _tp, (_lo, _hi) in _pairs.items():
+        _view = adata_clean[adata_clean.obs["leiden"].isin([_lo, _hi])].copy()
+        sc.tl.rank_genes_groups(_view, groupby="leiden", groups=[_hi], reference=_lo, method="wilcoxon", layer="pflog", use_raw=False)
+        _df = sc.get.rank_genes_groups_df(_view, group=_hi).reset_index(drop=True)
+        _df["gene_symbol"] = _df["names"].map(adata_clean.var["gene_symbol"])
+        _df["rank"] = _df.index + 1
+        _marker_dfs[_tp] = _df
+
+    _top_n = 15
+    mito_split_top_markers = pd.DataFrame({
+        f"{_tp} (cl.{_hi} vs cl.{_lo})": _marker_dfs[_tp].head(_top_n)["gene_symbol"].tolist()
+        for _tp, (_lo, _hi) in _pairs.items()
+    })
+    mito_split_top_markers.index = range(1, _top_n + 1)
+    mito_split_top_markers.index.name = "rank"
+
+    # Mito genes dominate the raw top-15 almost tautologically -- these clusters
+    # were picked BY %mito, so of course mito-encoded genes separate them. The
+    # real question is what distinguishes them beyond that, so also show the top
+    # markers with mito-encoded and ribosomal genes excluded.
+    mito_split_top_markers_non_mito = pd.DataFrame({
+        f"{_tp} (cl.{_hi} vs cl.{_lo})": (
+            _marker_dfs[_tp][~_marker_dfs[_tp]["gene_symbol"].str.startswith(("MT-", "RPL", "RPS"), na=False)]
+            .head(_top_n)["gene_symbol"].tolist()
+        )
+        for _tp, (_lo, _hi) in _pairs.items()
+    })
+    mito_split_top_markers_non_mito.index = range(1, _top_n + 1)
+    mito_split_top_markers_non_mito.index.name = "rank"
+
+    # Mito-encoded and heat-shock/ER-stress chaperone genes, the same panel used
+    # for the pre-filter clustering's earlier high-mito investigation.
+    _stress_genes = [
         "MT-ND5", "MT-CO3", "MT-ND2", "MT-ND1", "MT-ND4", "MT-CO2", "MT-ND3",
         "MT-ATP6", "MT-CO1", "MT-CYB", "MT-ND4L", "HSP90AB1", "HSP90B1", "HSPA5",
         "CANX", "RPLP1",
     ]
-    _n_genes = adata_flt.n_vars
+    _n_genes = adata_clean.n_vars
 
     _rows = []
-    for _gene in high_mito_stress_genes:
+    for _gene in _stress_genes:
         _row = {"gene": _gene}
-        for _cl, _df in _marker_dfs.items():
+        for _tp, _df in _marker_dfs.items():
             _match = _df.loc[_df["gene_symbol"] == _gene]
             if len(_match):
-                _row[f"cluster_{_cl}_rank"] = f"{int(_match['rank'].iloc[0]):,} / {_n_genes:,}"
-                _row[f"cluster_{_cl}_logfc"] = round(float(_match["logfoldchanges"].iloc[0]), 2)
+                _row[f"{_tp}_rank"] = f"{int(_match['rank'].iloc[0]):,} / {_n_genes:,}"
+                _row[f"{_tp}_logfc"] = round(float(_match["logfoldchanges"].iloc[0]), 2)
             else:
-                _row[f"cluster_{_cl}_rank"] = "not found"
-                _row[f"cluster_{_cl}_logfc"] = None
+                _row[f"{_tp}_rank"] = "not found"
+                _row[f"{_tp}_logfc"] = None
         _rows.append(_row)
 
-    high_mito_stress_gene_ranks = pd.DataFrame(_rows).set_index("gene")
+    mito_split_stress_gene_ranks = pd.DataFrame(_rows).set_index("gene")
 
     mo.vstack([
-        mo.md("**Top 15 markers per cluster (Wilcoxon vs. rest, `pflog` layer):**"),
-        high_mito_top_markers,
-        mo.md("**Rank and logFC of mito-encoded and heat-shock/ER-stress chaperone genes in each cluster's full ranking "
-              f"(out of {_n_genes:,} genes; low rank + positive logFC would indicate a stress/dying-nuclei signature):**"),
-        high_mito_stress_gene_ranks,
+        mo.md("**Top 15 markers, high-mito cluster vs. low-mito cluster within the same timepoint (Wilcoxon, `pflog` layer):**"),
+        mito_split_top_markers,
+        mo.md(
+            "**Same comparison, mito-encoded and ribosomal genes excluded** (those dominate the raw "
+            "list almost tautologically, since these clusters were picked by %mito in the first place -- "
+            "this shows what else distinguishes them):"
+        ),
+        mito_split_top_markers_non_mito,
+        mo.md(
+            "**Rank and logFC of mito-encoded and heat-shock/ER-stress chaperone genes "
+            f"(out of {_n_genes:,} genes; low rank + positive logFC in the high-mito cluster would support a stress/dying-nuclei explanation):**"
+        ),
+        mito_split_stress_gene_ranks,
     ])
-    return (high_mito_stress_genes,)
 
-
-@app.cell
-def high_mito_stress_score_by_cluster(
-    adata_flt,
-    alt,
-    high_mito_clusters,
-    high_mito_stress_genes,
-    np,
-    okabe_ito_palette,
-    pd,
-    sc,
-):
-    high_mito_stress_genes  # ran after the mito/heat-shock/ER-stress gene list was defined
-    high_mito_clusters  # ran after the moderately mito-elevated clusters were identified
-
-    # Module score (sc.tl.score_genes) over the mito-encoded and heat-shock/ER-stress
-    # genes, rather than looking at each gene individually: a per-cell summary of
-    # how strongly the whole stress signature is expressed, then compared across
-    # all clusters (not just the moderately mito-elevated ones) so the
-    # comparison has proper context.
-    _stress_gene_ids = adata_flt.var.index[adata_flt.var["gene_symbol"].isin(high_mito_stress_genes)]
-
-    sc.tl.score_genes(
-        adata_flt, gene_list=_stress_gene_ids, score_name="mito_stress_score",
-        use_raw=False, layer="pflog", random_state=0,
-    )
-
-    _cluster_order = sorted(adata_flt.obs["leiden"].cat.categories, key=int)
-    _plot_df = adata_flt.obs[["leiden", "mito_stress_score"]].copy()
-    _plot_df["group"] = np.where(_plot_df["leiden"].isin(high_mito_clusters), "Elevated mito cluster", "Other cluster")
-
-    _group_colors = {"Elevated mito cluster": okabe_ito_palette[8], "Other cluster": okabe_ito_palette[0]}
-
-    _box = alt.Chart(_plot_df).mark_boxplot(size=25).encode(
-        x=alt.X("leiden:N", title="Leiden cluster", sort=_cluster_order),
-        y=alt.Y("mito_stress_score:Q", title="Mito/heat-shock/ER-stress module score"),
-        color=alt.Color(
-            "group:N",
-            scale=alt.Scale(domain=list(_group_colors), range=list(_group_colors.values())),
-            legend=alt.Legend(title="Group"),
-        ),
-    )
-
-    _zero_line = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color="black", strokeDash=[4, 4]).encode(y="y:Q")
-
-    (_box + _zero_line).properties(
-        title="Mito/stress module score per leiden cluster (dashed line = population average, score = 0 by construction)",
-        width=650, height=350,
-    ).configure_view(strokeWidth=0)
     return
 
 
 @app.cell
-def high_mito_density_comparison(
-    adata_flt,
-    alt,
-    high_mito_clusters,
-    leiden_computed,
-    np,
-    okabe_ito_palette,
+def cluster_replicate_composition_check(
+    adata_clean,
+    adata_clean_clustering_computed,
     pd,
 ):
-    leiden_computed  # ran after leiden clustering
-    high_mito_clusters  # ran after the moderately mito-elevated clusters were identified
+    adata_clean_clustering_computed  # ran after leiden clustering on adata_clean
 
-    # Density shape check: is the elevated %mito in these clusters a tight,
-    # separate mode (consistent with a distinct dying/stressed population), or
-    # just a shifted, overlapping tail of the same overall distribution
-    # (consistent with ordinary biological variation)?
-    from scipy.stats import gaussian_kde as _gaussian_kde_hm
+    # If the mito split within a timepoint were purely intrinsic biology, both
+    # clusters should draw roughly evenly from all of that timepoint's
+    # biological replicate wells. A strong skew toward specific wells instead
+    # points at a well-specific technical effect (e.g. differential ambient
+    # contamination from uneven lysis/cell health at harvest), since replicates
+    # are supposed to be interchangeable copies of the same condition.
+    from scipy.stats import chi2_contingency
 
-    _high_mito_mask = adata_flt.obs["leiden"].isin(high_mito_clusters).to_numpy()
-    _high_mito_vals = adata_flt.obs.loc[_high_mito_mask, "pct_counts_mt"].to_numpy()
-    _rest_vals = adata_flt.obs.loc[~_high_mito_mask, "pct_counts_mt"].to_numpy()
+    _pairs = {"d2": ("1", "2", ["wtc11_endo_d2_1", "wtc11_endo_d2_2", "wtc11_endo_d2_4", "wtc11_endo_d2_5"]),
+              "d4": ("7", "4", ["wtc11_endo_d4_1", "wtc11_endo_d4_3", "wtc11_endo_d4_4", "wtc11_endo_d4_5"])}
 
-    _max_mito = adata_flt.obs["pct_counts_mt"].max()
-    _grid = np.linspace(0, _max_mito, 200)
+    _results = {}
+    for _tp, (_lo, _hi, _tags) in _pairs.items():
+        _sub = adata_clean.obs[adata_clean.obs["leiden"].isin([_lo, _hi])]
+        _sub = _sub[_sub["cmo_positive_tags_scanpy"].isin(_tags)]
+        _ct = pd.crosstab(_sub["leiden"], _sub["cmo_positive_tags_scanpy"])
+        _chi2, _p, _dof, _ = chi2_contingency(_ct)
+        _pct = (_ct.div(_ct.sum(axis=1), axis=0) * 100).round(1)
+        _results[_tp] = {"counts": _ct, "pct": _pct, "chi2": _chi2, "p": _p}
+        print(f"{_tp} (cluster {_lo} vs {_hi}): chi2={_chi2:.2f}, p={_p:.2e}")
+        print(_pct)
+        print()
 
-    _elevated_label = f"Clusters {', '.join(high_mito_clusters)}"
+    replicate_composition_by_cluster = _results
 
-    _density_df = pd.DataFrame({
-        "pct_mito": np.tile(_grid, 2),
-        "density": np.concatenate([
-            _gaussian_kde_hm(_high_mito_vals)(_grid),
-            _gaussian_kde_hm(_rest_vals)(_grid),
-        ]),
-        "group": [_elevated_label] * 200 + ["Rest of dataset"] * 200,
-    })
-
-    _group_colors = {_elevated_label: okabe_ito_palette[8], "Rest of dataset": okabe_ito_palette[0]}
-
-    _chart = alt.Chart(_density_df).mark_line(opacity=0.7, interpolate="monotone").encode(
-        x=alt.X("pct_mito:Q", title="% mitochondrial counts"),
-        y=alt.Y("density:Q", title="Density"),
-        color=alt.Color(
-            "group:N",
-            scale=alt.Scale(domain=list(_group_colors), range=list(_group_colors.values())),
-            legend=alt.Legend(title="Group"),
-        ),
-    ).properties(
-        title="%mito density: moderately elevated clusters vs. rest of dataset",
-        width=550, height=350,
-    ).configure_view(strokeWidth=0)
-
-    _chart
     return
 
 
 @app.cell(hide_code=True)
-def high_mito_investigation_conclusion(mo):
+def cluster_confounder_conclusion(mo):
     mo.md(r"""
-    ### High-mito investigation: conclusion
+    ### Cluster confounders in the new clustering: cell-cycle artifact, real transitional state, and real (not stressed) endothelial biology
 
-    `high_mito_density_comparison` shows clusters 4, 6, 7, 8, and 12 as a shifted, heavily overlapping tail of the same overall %mito distribution, not a distinct separate mode: about a quarter (24.2%) of the "rest of dataset" barcodes sit above these clusters' median, and about a quarter (28.1%) of these clusters' own barcodes sit below the rest's median. This is not the shape a genuinely distinct dying/stressed population would produce.
+    Re-clustering `adata_clean` after the GMM-calibrated CMO threshold change produced different clusters, so the earlier "clusters 2 and 3" investigation no longer targeted the right ones. Two independent patterns stood out in `cluster_summary_adata_clean`: mixed-timepoint clusters (3, 6), and a striking within-timepoint mito split (clusters 1 vs 2 in d2, 7 vs 4 in d4).
 
-    `high_mito_marker_comparison` backs this up at the gene level, and shows five distinct stories rather than one shared signature. Cluster 4 has elevated chaperone/ribosomal genes (HSP90AB1, HSPA5, RPLP1 all rank in the top ~150 of 62,757, positive logFC) alongside cell-cycle markers (DTL, CENPF, MKI67, MCM4) at the top, but its mitochondrial genes are actually depleted, not elevated, consistent with the chaperone and ribosome demand of active proliferation rather than damage. Cluster 6 has genuinely elevated mitochondrial genes (every MT- gene tested ranks in the top ~400, logFC +0.46 to +0.81) alongside angiogenic/endothelial markers (FLT1, ESM1), but its heat-shock/ER chaperone genes are depleted, consistent with real, elevated mitochondrial/metabolic activity rather than a stress response. Cluster 7 has elevated ER chaperones (HSP90B1, HSPA5, CANX) but not mitochondrial genes, alongside endothelial/ECM-secretory markers (KDR, NRP2, HAPLN1, COL11A1), consistent with the baseline protein-folding load of a secretory cell type. Cluster 8 shows no elevation in either the mitochondrial or the heat-shock/ER gene set at all (all rank near the bottom with negative logFC), so its mito elevation (14.0% median, the lowest of the five) isn't explained by anything tested here; its top markers (MECOM, FLI1, DACH1) don't point to an obvious alternative explanation either. Cluster 12 also shows no overlap with any of these genes, with neuronal/axon-guidance and migratory markers (KIF26B, UNC5C, ROBO2, PCDH7, FN1, HMCN1) at the top, matching the tip-cell-like transitional population described elsewhere in this notebook.
+    **Mixed-timepoint clusters (`mixed_timepoint_clusters_investigation`): same pattern as before, just renumbered.** Cluster 6 is a cell-cycle/S-phase artifact -- `CENPF` (rank 1 of 62,757), `MKI67` (rank 2), `DTL` (rank 5), `CLSPN` (rank 30), `MCM4` (rank 64) all strongly elevated, while G2/M mitotic genes (`CCNB1`, `CCNB2`, `CDK1`, `AURKA`, `AURKB`, `BUB1`) are depleted. Cluster 3 shows no cell-cycle signature at all and is instead defined by axon-guidance/neuronal-migration genes (`UNC5C`, `SLIT3`, `KIF26B`, `RALYL`, `PCDH7`, `ROBO2`) -- the same tip-cell-like transitional identity found previously.
 
-    `high_mito_stress_score_by_cluster` looks at the combined mito/heat-shock/ER-stress module score across every cluster, not just these five, and finds no clean separation: the doublet-dominated clusters (1, 2, 5, 9, 11) score just as high or higher than the elevated-mito clusters (2.28-2.58 vs. 2.09-2.38), most other clusters sit in a similar mid-to-high band, and only cluster 0 stands out as clearly lower (1.04). This looks like a gradient across the dataset rather than a distinct stressed/dying subpopulation.
+    **Same-timepoint mito split (`same_timepoint_mito_split_investigation`): initially looked like a stress artifact, but checking the actual identity markers overturns that.** The raw top markers are dominated by mito-encoded genes in both pairs (d2: cluster 2 vs 1; d4: cluster 4 vs 7) -- expected and not meaningful on its own, since these clusters were picked BY %mito in the first place. Heat-shock/ER-stress chaperone genes (`HSP90AB1`, `HSP90B1`, `HSPA5`, `CANX`, `RPLP1`) are also elevated in both pairs, which looked like a stress signature at first.
 
-    **Interpretation:** the moderate %mito elevation in these five clusters reflects genuine, and genuinely varied, biological variation, proliferation demand, real mitochondrial/metabolic activity, secretory ER load, or in cluster 8's case no clear explanation at all, rather than a shared stress response or dying nuclei. No additional cluster-level mito exclusion is applied.
+    But excluding mito-encoded and ribosomal genes reveals real, coherent cell-identity biology underneath. **Cluster 4 (d4)** is marked by unambiguous endothelial genes: `KDR` (VEGFR2), `CD93`, `PLVAP`, `ESM1`, `PLXND1`, `GJA1` -- and `SERPINH1` (HSP47, a collagen-specific chaperone) alongside real ECM genes explains the "ER stress" signal as the protein-folding load of active collagen/ECM secretion, not death. This is the same conclusion the pre-filter clustering already reached for its own moderately-elevated-mito clusters 6 and 7 (real metabolic/secretory endothelial biology, not debris), which were correctly kept. **Cluster 2 (d2)** shows a related pattern: `ROBO2`, `UNC5B`, `UNC5C`, `PCDH10` -- the same Slit-Robo/protocadherin axon-guidance family already established as real tip-cell-like transitional biology for cluster 3.
+
+    **Conclusion:** neither cluster 2 nor cluster 4 should be excluded. Both show real, coherent, differentiation-relevant biology once the tautological mito-gene signal is set aside, matching this dataset's own precedent from the pre-filter investigation. Practically, excluding them would also have been a large and disproportionate cut: cluster 4 alone is 1,565 of roughly 2,144 d4 cells (about 73% of the timepoint), and cluster 2 is 2,872 of `adata_clean`'s 12,418 cells (23.1%) -- losing that much of specific timepoints on the strength of an incomplete marker check (mito/stress genes only) would have been a mistake.
     """)
-    return
 
-
-@app.cell(hide_code=True)
-def negative_tag_rescue(mo):
-    mo.md(r"""
-    ## Rescue Negative tags
-
-    Are "Negative" barcodes (no CMO cleared its detection threshold) worth rescuing as real cells, or are they debris that just happened to sit below threshold? This section checks their QC profile against Singlets in the same clusters, then validates the cluster-consensus rescue heuristic against each Negative barcode's own sub-threshold CMO signal.
-    """)
-    return
-
-
-@app.cell
-def negative_vs_singlet_qc_intro(mo):
-    mo.md(r"""
-    ### Negative vs. Singlet QC profile
-
-    Are "Negative" barcodes that land in largely-Singlet clusters real cells that simply failed CMO hash detection, with a QC profile similar to their cluster's Singlets, or are they lower-quality debris? Restricted to clusters that are neither doublet-dominated nor the high-mito cluster, not the full per-cell `pass_strict_qc` mask, which would incorrectly include the debris cluster excluded via the separate mito rule.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def negative_vs_singlet_qc(
-    adata_flt,
-    alt,
-    cmo_assignment_computed,
-    doublet_dominated_clusters,
-    leiden_doublet_summary,
-    mo,
-    np,
-    okabe_ito_palette,
-    pd,
-):
-    cmo_assignment_computed  # ran after CMO tags were assigned
-
-    # See negative_vs_singlet_qc_intro above for the interpretation.
-    from scipy.stats import gaussian_kde as _gaussian_kde_neg
-
-    _singlet_dominant_clusters = [c for c in leiden_doublet_summary.index if c not in doublet_dominated_clusters]
-    _compare_mask = (adata_flt.obs["leiden"].isin(_singlet_dominant_clusters) & adata_flt.obs["cmo_status_scanpy"].isin(["Singlet", "Negative"])).to_numpy()
-    _compare_obs = adata_flt.obs.loc[_compare_mask]
-    _n_compare = len(_compare_obs)
-
-    _status_colors = {"Singlet": okabe_ito_palette[3], "Negative": okabe_ito_palette[0]}
-
-    def _density_lines(metric_col, grid):
-        _frames = []
-        for _status, _color in _status_colors.items():
-            _vals = _compare_obs.loc[_compare_obs["cmo_status_scanpy"] == _status, metric_col].to_numpy()
-            _label = f"{_status} ({len(_vals) / _n_compare * 100:.1f}%)"
-            _frames.append(pd.DataFrame({metric_col: grid, "density": _gaussian_kde_neg(_vals)(grid), "status": _label, "color": _color}))
-        return pd.concat(_frames, ignore_index=True)
-
-    def _density_chart(metric_col, title, grid):
-        _df = _density_lines(metric_col, grid)
-        _colors = dict(zip(_df["status"].unique(), _df.drop_duplicates("status")["color"]))
-        return alt.Chart(_df).mark_line(strokeWidth=2, interpolate="monotone").encode(
-            x=alt.X(f"{metric_col}:Q", title=title),
-            y=alt.Y("density:Q", title="Density"),
-            color=alt.Color("status:N", scale=alt.Scale(domain=list(_colors), range=list(_colors.values())), legend=alt.Legend(title="CMO status")),
-        ).properties(title=f"{title} by CMO status", width=340, height=320).configure_view(strokeWidth=0)
-
-    _mito_grid = np.linspace(0, _compare_obs["pct_counts_mt"].max(), 200)
-    _doublet_grid = np.linspace(0, _compare_obs["scrublet_doublet_score"].max(), 200)
-
-    _mito_chart = _density_chart("pct_counts_mt", "% mitochondrial counts", _mito_grid)
-    _doublet_chart = _density_chart("scrublet_doublet_score", "Scrublet doublet score", _doublet_grid)
-
-    def _tight_row(*items):
-        # mo.hstack with widths=None adds no wrapper/flex styling around children,
-        # so block-level chart divs just fill the row (no slack left for
-        # justify-content to redistribute). Build the flex row by hand instead.
-        _items_html = "".join(
-            f'<div style="flex: 0 0 auto;">{mo.as_html(it).text}</div>' for it in items
-        )
-        return mo.Html(f'<div style="display:flex; justify-content:flex-start; gap:1rem;">{_items_html}</div>')
-
-    _tight_row(_doublet_chart, _mito_chart)
-    return
-
-
-@app.cell
-def rescue_tag_cmo_signal_check_intro(mo):
-    mo.md(r"""
-    ### Rescue-tag validation against the sub-threshold CMO signal
-
-    Deeper validation of the rescue heuristic: for each rescued "Negative" barcode, restricted to clusters that are neither doublet-dominated nor the high-mito cluster (not the full per-cell `pass_strict_qc` mask), find its single closest-to-threshold CMO (the smallest gap between CLR value and that CMO's own threshold, even though none cleared it) and check whether that CMO's timepoint matches the tag assigned via cluster consensus. A high match rate means the sub-threshold CMO signal independently supports the rescue, not just cluster popularity.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def rescue_tag_cmo_signal_check(
-    adata_cmo,
-    adata_flt,
-    clr,
-    cmo_assignment_computed,
-    cmo_to_timepoint,
-    doublet_dominated_clusters,
-    leiden_doublet_summary,
-    mo,
-    np,
-    pd,
-    rescue_computed,
-    thresholds,
-):
-    cmo_assignment_computed  # ran after CMO tags were assigned
-    rescue_computed  # ran after rescue tags were computed
-
-    # See rescue_tag_cmo_signal_check_intro above for the interpretation.
-    from scipy import stats
-    from statsmodels.stats.proportion import proportion_confint
-
-    _good_clusters = [c for c in leiden_doublet_summary.index if c not in doublet_dominated_clusters]
-    _neg_mask = (adata_flt.obs["cmo_status_scanpy"] == "Negative") & adata_flt.obs["leiden"].isin(_good_clusters)
-
-    _clr_neg = clr[_neg_mask.to_numpy()]
-    _gap = _clr_neg - thresholds
-    _best_cmo_idx = np.argmax(_gap, axis=1)
-    _best_cmo = adata_cmo.var["gene_name"].to_numpy()[_best_cmo_idx]
-    _best_cmo_timepoint = pd.Series(_best_cmo).map(cmo_to_timepoint).to_numpy()
-    _rescued_tag = adata_flt.obs.loc[_neg_mask, "rescued_cmo_tag"].to_numpy()
-    _match = _best_cmo_timepoint == _rescued_tag
-    _best_gap = _gap[np.arange(len(_gap)), _best_cmo_idx]
-    _n = len(_match)
-    _k = int(_match.sum())
-
-    # Proper null: 1000-permutation empirical distribution, plus a binomial test
-    # against that null rate, rather than eyeballing a handful of shuffles.
-    _rng = np.random.default_rng(0)
-    _null_rates = np.array([(_best_cmo_timepoint == _rng.permutation(_rescued_tag)).mean() for _ in range(1000)])
-    _null_rate = _null_rates.mean()
-    _p_permutation = (_null_rates >= _match.mean()).mean()
-    _p_binomial = stats.binomtest(_k, _n, _null_rate, alternative="greater").pvalue
-
-    # Per-timepoint match rate, exposed publicly so the forest plot below can be
-    # built in its own cell instead of bundled into this markdown's output.
-    _by_tag = pd.DataFrame({"rescued_tag": _rescued_tag, "match": _match}).groupby("rescued_tag").agg(
-        pct_match=("match", "mean"), n_barcodes=("match", "count"), n_match=("match", "sum")
-    )
-    _ci = _by_tag.apply(lambda r: proportion_confint(r["n_match"], r["n_barcodes"], method="wilson"), axis=1)
-    _by_tag["lo"] = [c[0] * 100 for c in _ci]
-    _by_tag["hi"] = [c[1] * 100 for c in _ci]
-    _by_tag["pct_match"] = _by_tag["pct_match"] * 100
-    rescue_tag_match_summary = _by_tag.reset_index()
-    rescue_tag_null_rate = _null_rate
-
-    mo.md(f"""
-    **Rescue-tag validation:** for {_n:,} rescued Negative barcodes, restricted to
-    clusters that actually survive `pass_strict_qc`, the CMO closest to (but not over) its
-    threshold matches the assigned rescue tag **{_match.mean():.1%}** of the time
-    ({_k:,} of {_n:,}), versus a **{_null_rate:.1%}** null (1,000-permutation mean, SD
-    {_null_rates.std():.1%}) if the rescue tag were random, roughly {_match.mean() / _null_rate:.1f}x
-    enrichment over chance.
-
-    Statistical test: 0 of 1,000 permutations reached the observed rate (permutation
-    p < 0.001), and a binomial test against the null rate gives p = {_p_binomial:.2e}.
-    With n in the thousands this significance is expected, so the roughly 3x enrichment
-    is the number that matters for practical significance, not the p-value itself.
-
-    As a complementary check, not relying on the shuffle null: matched barcodes have a
-    smaller median gap-to-threshold ({np.median(_best_gap[_match]):.2f}) than mismatched ones
-    ({np.median(_best_gap[~_match]):.2f}). When there's a genuine near-miss CMO signal, it
-    tends to agree with the rescue tag, when the signal is weak or noisy, agreement is closer to chance.
-    """)
-    return rescue_tag_match_summary, rescue_tag_null_rate
-
-
-@app.cell(hide_code=True)
-def rescue_tag_match_rate_plot(
-    alt,
-    okabe_ito_palette,
-    pd,
-    rescue_tag_match_summary,
-    rescue_tag_null_rate,
-):
-    # Forest-plot style: point at the observed rate, bar spanning a 95% Wilson
-    # confidence interval, dashed line at the permutation null rate, mirroring
-    # doublet_pct_forest_plot's layout.
-    _null_line = alt.Chart(pd.DataFrame({"y": [rescue_tag_null_rate * 100]})).mark_rule(
-        strokeDash=[4, 4], color="black", strokeWidth=2,
-    ).encode(y="y:Q")
-
-    _error_bars = alt.Chart(rescue_tag_match_summary).mark_rule(strokeWidth=2, color=okabe_ito_palette[5]).encode(
-        x=alt.X("rescued_tag:N", title="Timepoint", axis=alt.Axis(labelAngle=0)),
-        y=alt.Y("lo:Q", title="% match rate", scale=alt.Scale(domain=[0, 100])),
-        y2="hi:Q",
-    )
-    _points = alt.Chart(rescue_tag_match_summary).mark_point(size=100, filled=True, color=okabe_ito_palette[5]).encode(
-        x=alt.X("rescued_tag:N"),
-        y=alt.Y("pct_match:Q"),
-        tooltip=["rescued_tag", alt.Tooltip("pct_match:Q", format=".1f"), "n_barcodes"],
-    )
-
-    _chart = (_null_line + _error_bars + _points).properties(
-        title="Rescue-tag match rate by timepoint (dashed line = permutation null)",
-        width=450, height=350,
-    ).configure_view(strokeWidth=0)
-
-    _chart
-    return
-
-
-@app.cell
-def negative_tag_rescue_conclusion(mo):
-    mo.md(r"""
-    ### Negative tag rescue: conclusion
-
-    **"Negative" barcodes in singlet-dominant clusters look worth rescuing, and the rescued tags are independently supported by the sub-threshold CMO signal.**
-
-    Restricted to clusters that are neither doublet-dominated nor the high-mito cluster 2 (cluster-level restriction, not the full per-cell `pass_strict_qc` mask), `negative_vs_singlet_qc` shows Negatives have a comparable, even slightly better, QC profile than Singlets in the same clusters: median %mito 8.4% vs. 9.4%, median Scrublet doublet score 0.115 vs. 0.121. This supports treating them as real cells with failed CMO staining rather than debris.
-
-    `rescue_tag_cmo_signal_check` goes further: for each rescued Negative, we check whether its single closest-to-threshold CMO (the one nearest to, but not over, its cutoff) belongs to the same timepoint as the tag assigned via cluster consensus. Match rate is 42.9% overall, versus a 16.9% null baseline (1,000-permutation test) if the rescue tag were random, roughly 2.5x enrichment (binomial p around 1.3e-135). This varies by timepoint, d3 91.3%, d0/d2/d4 32 to 35%, d1 42.0%, but every timepoint sits well above the random baseline. d3 being so much higher than the rest makes sense: d3 has the worst CMO recovery of any timepoint (3,428 confidently-assigned singlets, versus 3,913 to 4,127 for the other four), so wherever d3 is a cluster's true dominant population, its cells are disproportionately likely to end up "Negative" rather than the negatives being a mix of several timepoints' poorly-stained cells. That makes the cluster-consensus rescue tag for those barcodes both more likely to be d3 and more likely to be correct. As in channel1, d3 rescues are by far the most robust.
-    """)
     return
 
 
@@ -2589,237 +2553,36 @@ def strict_qc_cascade_intro(mo):
     mo.md(r"""
     ## Consolidated strict QC decision
 
-    Three independent exclusion criteria combine into `pass_strict_qc`: doublet-dominated clusters, Scrublet-predicted doublets, and CMO-hashing Doublet calls. The mito filtering itself was already applied upstream, pre-clustering, in `mask_filter_cells` (median + 2.5 MADs); no additional cluster- or cell-level mito exclusion is applied here, per `high_mito_investigation_conclusion`. The breakdown below applies the three criteria as a cascade, ordered from least to most restrictive (by how many cells each filter alone would keep), the same style used for the lenient QC filter earlier in `mask_filter_cells`.
+    `pass_strict_qc` marks the same barcodes kept in `adata_clean`: a Scrublet singlet AND a CMO-hashing Singlet (see `create_qc_passing_adata`). Unlike channel1/channel2, no cluster-based exclusion criterion is applied here -- clustering happens after this filter rather than before it (see `final_round_intro`), so there is no doublet-dominated-cluster concept to apply at this stage.
     """)
+
     return
 
 
 @app.cell(hide_code=True)
 def strict_qc_cascade(
+    adata_clean,
+    adata_clean_clustering_computed,
     adata_flt,
-    cmo_assignment_computed,
-    leiden_doublet_summary,
     mo,
-    np,
-    pd,
 ):
-    cmo_assignment_computed  # ran after CMO tags were assigned
+    adata_clean_clustering_computed  # ran after adata_clean was built and clustered
 
-    def _run_strict_qc(adata, doublet_dominated_clusters):
-        _is_doublet_cluster = adata.obs["leiden"].isin(doublet_dominated_clusters)
-        _is_scrublet_doublet = adata.obs["scrublet_predicted_doublet"]
-        _is_cmo_doublet = adata.obs["cmo_status_scanpy"] == "Doublet"
+    # pass_strict_qc marks the same barcodes kept in adata_clean, so downstream
+    # consumers that need this as a column on adata_flt.obs (write_qc_annotations_tsv,
+    # the ATAC whitelist) stay in sync with adata_clean by construction rather than
+    # recomputing the filter a second time.
+    adata_flt.obs["pass_strict_qc"] = adata_flt.obs_names.isin(adata_clean.obs_names)
+    strict_qc_computed = True
 
-        adata.obs["qc_exclude_reason"] = np.select(
-            [_is_doublet_cluster, _is_scrublet_doublet, _is_cmo_doublet],
-            ["doublet_cluster", "scrublet_doublet", "cmo_doublet"],
-            default="",
-        )
-        adata.obs["pass_not_doublet_cluster"] = ~_is_doublet_cluster
-        adata.obs["pass_not_scrublet_doublet"] = ~_is_scrublet_doublet
-        adata.obs["pass_not_cmo_doublet"] = ~_is_cmo_doublet
-        return True
-
-    # I am being more strict here
-    _doublet_cluster_mask = leiden_doublet_summary["pct_cmo_doublet"].gt(40) | leiden_doublet_summary["pct_scrublet_doublet"].gt(40)
-    doublet_dominated_clusters = leiden_doublet_summary.index[_doublet_cluster_mask].tolist()
-
-    # Picked programmatically (not hardcoded) so the write-up and charts referencing
-    # "the" doublet cluster / "the" well-behaved cluster stay correct even if Leiden
-    # renumbers clusters on a future re-run.
-    representative_doublet_cluster = leiden_doublet_summary.loc[doublet_dominated_clusters, "pct_cmo_doublet"].idxmax()
-    representative_well_behaved_cluster = leiden_doublet_summary["pct_cmo_doublet"].idxmin()
-
-    _ok = _run_strict_qc(adata_flt, doublet_dominated_clusters)
-
-    # Cascade breakdown, like mask_filter_cells, steps ordered from least to most
-    # restrictive (by how many cells each filter alone would keep) so the table
-    # reads as a natural narrowing funnel.
     _n_total = adata_flt.n_obs
-    _steps = [
-        (f"not in doublet-dominated cluster ({', '.join(doublet_dominated_clusters)})", adata_flt.obs["pass_not_doublet_cluster"]),
-        ("CMO hashing status != Doublet", adata_flt.obs["pass_not_cmo_doublet"]),
-        ("Scrublet not predicted_doublet", adata_flt.obs["pass_not_scrublet_doublet"]),
-    ]
-    _steps = sorted(_steps, key=lambda s: -int(s[1].sum()))
-
-    _remaining_mask = pd.Series(True, index=adata_flt.obs.index)
-    _rows = []
-    for _label, _step_mask in _steps:
-        _before = int(_remaining_mask.sum())
-        _remaining_mask &= _step_mask
-        _after = int(_remaining_mask.sum())
-        _lost = _before - _after
-        _rows.append(
-            f"| `{_label}` | {_before:,} | {_after:,} | {_lost:,} | {_lost / _before:.1%} |"
-        )
-
-    # Exposed as its own top-level name, and written back to adata_flt.obs, so
-    # downstream cells get a real, trackable marimo dependency edge instead of
-    # just sharing a ref to "adata_flt". See the marimo-pair race-condition note.
-    pass_strict_qc_mask = _remaining_mask
-    adata_flt.obs["pass_strict_qc"] = pass_strict_qc_mask
-    strict_qc_computed = _ok
+    _n_pass = int(adata_flt.obs["pass_strict_qc"].sum())
 
     mo.md(f"""
-    **Strict QC filter breakdown** (steps ordered from least to most restrictive):
-
-    | Filter step | Before | After | Lost | Lost % |
-    |---|---|---|---|---|
-    {chr(10).join(_rows)}
-
-    **Net:** {int(pass_strict_qc_mask.sum()):,} of {_n_total:,} barcodes ({pass_strict_qc_mask.sum() / _n_total:.1%}) survive strict QC (`pass_strict_qc`).
+    **Net:** {_n_pass:,} of {_n_total:,} lenient-QC barcodes ({_n_pass / _n_total:.1%}) survive strict QC (`pass_strict_qc`), matching `adata_clean`.
     """)
-    return (
-        doublet_dominated_clusters,
-        representative_doublet_cluster,
-        representative_well_behaved_cluster,
-        strict_qc_computed,
-    )
 
-
-@app.cell
-def rescue_negative_tags_intro(mo):
-    mo.md(r"""
-    ## Apply the negative tag rescue
-
-    As justified in `negative_tag_rescue_conclusion` above: barcodes with no CMO clearing threshold ("Negative") are rescued to their cluster's consensus timepoint, the majority vote among that cluster's own CMO singlets, rather than dropped outright.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def rescue_negative_tags(
-    adata_flt,
-    alt,
-    cmo_assignment_computed,
-    ec_diff_palette,
-    np,
-    strict_qc_computed,
-):
-    cmo_assignment_computed  # ran after CMO tags were assigned
-    strict_qc_computed  # ran after strict QC flags were computed, for the pass_strict_qc filter below
-
-    def _run_rescue_tags(adata, cluster_consensus_tag):
-        adata.obs["rescued_cmo_tag"] = np.select(
-            [adata.obs["cmo_status_scanpy"] == "Singlet", adata.obs["cmo_status_scanpy"] == "Negative"],
-            [adata.obs["timepoint_scanpy"], adata.obs["leiden"].map(cluster_consensus_tag)],
-            default=None,
-        )
-        return True
-
-    cluster_consensus_tag = (
-        adata_flt.obs.loc[adata_flt.obs["cmo_status_scanpy"] == "Singlet"]
-        .groupby("leiden", observed=True)["timepoint_scanpy"]
-        .agg(lambda s: s.mode().iat[0])
-    )
-
-    rescue_computed = _run_rescue_tags(adata_flt, cluster_consensus_tag)
-
-    # Restricted to pass_strict_qc, since that's the population rescued_cmo_tag is
-    # actually used for downstream -- barcodes dropped by strict QC still get a
-    # rescued_cmo_tag value, but it's never read.
-    _timepoint_order = ["d0", "d1", "d2", "d3", "d4"]
-    _qc_pass_obs = adata_flt.obs.loc[adata_flt.obs["pass_strict_qc"]]
-    _tag_counts = _qc_pass_obs["rescued_cmo_tag"].value_counts().reindex(_timepoint_order).reset_index()
-    _tag_counts.columns = ["timepoint", "n_barcodes"]
-    _n_total_tagged = int(_tag_counts["n_barcodes"].sum())
-
-    _n_rescued = (
-        _qc_pass_obs.loc[_qc_pass_obs["cmo_status_scanpy"] == "Negative", "rescued_cmo_tag"]
-        .value_counts().reindex(_timepoint_order).fillna(0).astype(int)
-    )
-    _tag_counts["n_rescued"] = _tag_counts["timepoint"].map(_n_rescued)
-    _tag_counts["label"] = _tag_counts.apply(
-        lambda r: f"{r['n_barcodes']:,} ({r['n_rescued']:,} rescued)", axis=1
-    )
-
-    _bar_colors = {t: ec_diff_palette.get(t, ec_diff_palette["Unassigned"]) for t in _timepoint_order}
-    _bar_chart = alt.Chart(_tag_counts).mark_bar().encode(
-        y=alt.Y("timepoint:N", sort=_timepoint_order, title="Timepoint"),
-        x=alt.X("n_barcodes:Q", title="Number of barcodes"),
-        color=alt.Color(
-            "timepoint:N",
-            scale=alt.Scale(domain=list(_bar_colors), range=list(_bar_colors.values())),
-            legend=None,
-        ),
-    )
-    _bar_labels = alt.Chart(_tag_counts).mark_text(align="left", dx=3, fontSize=9).encode(
-        y=alt.Y("timepoint:N", sort=_timepoint_order),
-        x=alt.X("n_barcodes:Q"),
-        text=alt.Text("label:N"),
-    )
-
-    _chart = (_bar_chart + _bar_labels).properties(
-        title=["Rescued timepoint tag breakdown (pass_strict_qc only)", f"n = {_n_total_tagged:,} barcodes total"],
-        width=480, height=300,
-    ).configure_view(strokeWidth=0)
-
-    _chart
-    return cluster_consensus_tag, rescue_computed
-
-
-@app.cell(hide_code=True)
-def pca_by_rescued_timepoint(
-    adata_flt,
-    ec_diff_palette,
-    pca_computed,
-    rescue_computed,
-    sc,
-    strict_qc_computed,
-):
-    strict_qc_computed  # ran after strict QC flags were computed
-    rescue_computed  # ran after rescue tags were computed
-    pca_computed  # ran after PCA
-
-    _adata_qc_view = adata_flt[adata_flt.obs["pass_strict_qc"]]
-    _palette = {**ec_diff_palette, "None": "#4D4D4D"}
-    sc.pl.pca(
-        _adata_qc_view,
-        color="rescued_cmo_tag",
-        palette=_palette,
-        na_color="#4D4D4D",
-        dimensions=[(0, 1)],
-        size=5,
-        title="PCA colored by timepoint (pass_strict_qc only)",
-    )
-    return
-
-
-@app.cell(hide_code=True)
-def umap_by_rescued_timepoint(
-    adata_flt,
-    ec_diff_palette,
-    rescue_computed,
-    sc,
-    strict_qc_computed,
-    umap_computed,
-):
-    strict_qc_computed  # ran after strict QC flags were computed
-    rescue_computed  # ran after rescue tags were computed
-    umap_computed  # ran after UMAP was computed
-
-    _adata_qc_view = adata_flt[adata_flt.obs["pass_strict_qc"]]
-    sc.pl.umap(
-        _adata_qc_view,
-        color=["rescued_cmo_tag", "pct_counts_mt"],
-        palette=ec_diff_palette,
-        cmap="cividis",
-        ncols=2,
-        size=5,
-        title=["UMAP colored by timepoint", "UMAP colored by %mito"],
-    )
-
-    # Leiden clusters shown separately -- ec_diff_palette only covers timepoint
-    # labels (d0-d4/Unassigned), not the 12 Leiden cluster IDs, so this uses
-    # scanpy's own default categorical palette instead.
-    sc.pl.umap(
-        _adata_qc_view,
-        color="leiden",
-        size=5,
-        title="UMAP colored by Leiden cluster",
-    )
-    return
+    return (strict_qc_computed,)
 
 
 @app.cell(hide_code=True)
@@ -2833,657 +2596,62 @@ def _(mo):
 @app.cell(hide_code=True)
 def write_qc_annotations_tsv(
     adata_flt,
-    ch1_outdir_root,
+    outdir_root,
     project_root,
-    rescue_computed,
     strict_qc_computed,
 ):
-    strict_qc_computed  # ran after strict QC flags were computed
-    rescue_computed  # ran after rescue tags were computed
+    strict_qc_computed  # ran after pass_strict_qc was set
 
-    _outfile = ch1_outdir_root / "adata_flt_qc_annotations.tsv"
+    _outfile = outdir_root / "adata_flt_qc_annotations.tsv"
     _outfile.parent.mkdir(parents=True, exist_ok=True)
     adata_flt.obs.to_csv(_outfile, sep="\t")
 
     # Show only the path relative to the repo, not the full local filesystem path
     _outfile.relative_to(project_root)
+
     return
 
 
 @app.cell(hide_code=True)
 def filtering_strategy_conclusion(
+    adata_clean,
+    adata_clean_clustering_computed,
     adata_flt,
-    doublet_dominated_clusters,
-    high_mito_clusters,
+    igvf_dataset0_anno,
     mo,
-    rescue_tag_match_summary,
+    pd,
+    strict_qc_computed,
 ):
+    strict_qc_computed  # ran after pass_strict_qc was set
+    adata_clean_clustering_computed  # ran after leiden clustering on adata_clean
+
     _n_lenient = adata_flt.n_obs
-    _n_scrublet = int(adata_flt.obs["scrublet_predicted_doublet"].sum())
-    _n_cmo = int((adata_flt.obs["cmo_status_scanpy"] == "Doublet").sum())
-    _n_cluster = int(adata_flt.obs["leiden"].isin(doublet_dominated_clusters).sum())
-    _n_pass = int(adata_flt.obs["pass_strict_qc"].sum())
+    _n_pass = adata_clean.n_obs
     _pct_pass = _n_pass / _n_lenient
+    _n_scrublet_doublet = int(adata_flt.obs["scrublet_predicted_doublet"].sum())
+    _n_cmo_not_singlet = int((adata_flt.obs["cmo_status_scanpy"] != "Singlet").sum())
 
-    _elevated_list = ", ".join(high_mito_clusters)
+    _raw_to_clean = pd.Series(adata_clean.obs_names, index=adata_clean.obs_names.str.split("_", n=1).str[0])
+    _igvf0_in_clean = igvf_dataset0_anno["barcode_raw"].isin(_raw_to_clean.index)
+    _pct_igvf0_overlap = _igvf0_in_clean.mean()
 
-    _qc_pass_obs = adata_flt.obs.loc[adata_flt.obs["pass_strict_qc"]]
-    _n_rescued_by_tp = (
-        _qc_pass_obs.loc[_qc_pass_obs["cmo_status_scanpy"] == "Negative", "rescued_cmo_tag"]
-        .value_counts()
-    )
+    _matched = igvf_dataset0_anno[_igvf0_in_clean].copy()
+    _matched["obs_name"] = _raw_to_clean.loc[_matched["barcode_raw"]].to_numpy()
+    _matched["our_timepoint"] = adata_clean.obs.loc[_matched["obs_name"], "timepoint_scanpy"].to_numpy()
+    _pct_igvf0_agree = (_matched["timepoint"] == _matched["our_timepoint"]).mean()
 
-    _fewest_rescue_tp = _n_rescued_by_tp.idxmin()
-    _fewest_rescue_n = int(_n_rescued_by_tp.min())
-    _rescue_lo, _rescue_hi = int(_n_rescued_by_tp.min()), int(_n_rescued_by_tp.max())
-
-    _match_by_tp = rescue_tag_match_summary.set_index("rescued_tag")["pct_match"]
-    _fewest_tp_match = _match_by_tp.loc[_fewest_rescue_tp]
-    _other_match = _match_by_tp.drop(index=_fewest_rescue_tp)
-    _other_lo, _other_hi = _other_match.min(), _other_match.max()
+    _n_clusters = adata_clean.obs["leiden"].nunique()
 
     mo.md(f"""
     ### Filtering strategy: conclusions
 
-    Starting from {_n_lenient:,} barcodes surviving the lenient QC filter (which already includes an upstream mito cutoff, median + 2.5 MADs, applied pre-clustering in `mask_filter_cells`), strict QC drops barcodes for one of three reasons: Scrublet-predicted doublets ({_n_scrublet:,}), CMO-hashing Doublet calls ({_n_cmo:,}), or doublet-dominated clusters ({_n_cluster:,}), leaving **{_n_pass:,} of {_n_lenient:,} barcodes ({_pct_pass:.1%})** as `pass_strict_qc`. No additional cluster- or cell-level mito exclusion is applied at this stage: the moderately mito-elevated clusters ({_elevated_list}) show no stress/dying-nuclei signature (density shape, marker genes, and module score all point to genuine biological variation, not debris, see `high_mito_investigation_conclusion`), so they're kept rather than excluded.
+    Starting from {_n_lenient:,} barcodes surviving the lenient QC filter (median + 2.5 MADs mito cutoff, applied pre-clustering in `mask_filter_cells`), strict QC keeps only barcodes that are both a Scrublet singlet and a CMO-hashing Singlet (`create_qc_passing_adata`), leaving **{_n_pass:,} of {_n_lenient:,} barcodes ({_pct_pass:.1%})** as `adata_clean` / `pass_strict_qc`. This drops {_n_scrublet_doublet:,} Scrublet-predicted doublets and {_n_cmo_not_singlet:,} barcodes that are CMO-hashing Negative or Doublet (with overlap between the two). Unlike this dataset's own earlier approach, no cluster-based exclusion criterion is applied at this stage: clustering happens after this filter rather than before it, so there is no doublet-dominated-cluster concept left to apply, by construction.
 
-    Among those survivors, CMO-hashing "Negative" barcodes are rescued to their cluster's consensus timepoint rather than dropped, contributing {_rescue_lo:,} to {_rescue_hi:,} rescued barcodes per timepoint. {_fewest_rescue_tp} gets the fewest ({_fewest_rescue_n:,}), a knock-on effect of {_fewest_rescue_tp} also having the fewest confidently-tagged singlets overall, so fewer clusters end up with {_fewest_rescue_tp} as their consensus timepoint to rescue negatives into. That's a separate question from how *accurate* those rescues are: `negative_tag_rescue_conclusion` shows {_fewest_rescue_tp} rescues are in fact the most reliable of any timepoint ({_fewest_tp_match:.1f}% match rate vs. {_other_lo:.0f}-{_other_hi:.0f}% for the others), precisely because {_fewest_rescue_tp}'s weaker CMO recovery means its true cells are disproportionately likely to end up "Negative" rather than negatives being a random mix. The resulting `rescued_cmo_tag` is what downstream RNA and ATAC analyses use as each barcode's timepoint label.
+    This direct per-cell filter already agrees well with the external `final_anno_igvf0.tsv` annotation (`create_qc_passing_adata`): {_pct_igvf0_overlap:.1%} of IGVF0's barcodes are present in `adata_clean`, and of those, {_pct_igvf0_agree:.1%} agree on timepoint. Since every barcode in `adata_clean` is a direct CMO Singlet by construction, `timepoint_scanpy` is already a real, direct d0-d4 label for every survivor -- there is no cluster-consensus rescue step for this dataset, unlike channel1/channel2 (that strategy was tried and retired; see the rescue-strategy discussion above).
+
+    Clustering `adata_clean` from scratch (`cluster_adata_clean`) gives {_n_clusters} clusters, five of which are each over 90% a single timepoint (`doublet_overview_adata_clean`). The remaining two, clusters 2 and 3, have mixed timepoint composition but for different reasons (`clusters_2_3_conclusion`): cluster 2 is a cell-cycle/S-phase clustering artifact, not a distinct identity, while cluster 3 is real, timepoint-spanning transitional biology. Neither is excluded from `adata_clean` at this stage.
     """)
-    return
 
-
-@app.cell(hide_code=True)
-def cluster9_intro(mo):
-    mo.md(r"""
-    # Extra: Cluster 9 investigation
-
-    Cluster 9 is flagged as doublet-dominated under this notebook's stricter cutoff (`pct_cmo_doublet > 40% OR pct_scrublet_doublet > 40%`, see `strict_qc_cascade`): it clears the CMO side at 44.6% but not the Scrublet side (29.3%), short of the original 50% bar on either metric. All 1,113 of its cells are excluded by `pass_strict_qc` as a result. This section asks whether that exclusion is actually justified, using the full population rather than the strict-QC-filtered view, since none of this cluster survives it.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ### Tag mismatch analysis
-
-    Sanity check on the rescue heuristic: among barcodes that DO have a direct CMO singlet call, how often does that call disagree with what we'd have assigned them via their cluster's consensus, the same rule used to rescue Negatives? A high mismatch rate for a specific cluster flags it as a candidate for further investigation.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def cluster_tag_mismatch_check(
-    adata_flt,
-    cluster_consensus_tag,
-    cmo_assignment_computed,
-    doublet_dominated_clusters,
-):
-    cmo_assignment_computed  # ran after CMO tags were assigned
-
-    # See the markdown above for the interpretation.
-    _singlets = adata_flt.obs.loc[adata_flt.obs["cmo_status_scanpy"] == "Singlet"].copy()
-    _singlets["cluster_consensus_tag"] = _singlets["leiden"].map(cluster_consensus_tag)
-    _mismatch = _singlets["timepoint_scanpy"] != _singlets["cluster_consensus_tag"]
-
-    _n_mismatch = int(_mismatch.sum())
-    _n_singlets = len(_singlets)
-
-    _by_cluster = (
-        _singlets.assign(mismatch=_mismatch)
-        .groupby("leiden", observed=True)["mismatch"]
-        .agg(["sum", "count"])
-        .rename(columns={"sum": "n_mismatch", "count": "n_singlets"})
-    )
-    _by_cluster["pct_mismatch"] = (_by_cluster["n_mismatch"] / _by_cluster["n_singlets"] * 100).round(1)
-    _by_cluster["marked_for_removal"] = [cl in doublet_dominated_clusters for cl in _by_cluster.index]
-
-    print(f"{_n_mismatch} of {_n_singlets} singlets ({_n_mismatch / _n_singlets:.1%}) have an own-tag that disagrees with their cluster's consensus tag.")
-    _by_cluster.sort_values("pct_mismatch", ascending=False)
-    return
-
-
-@app.cell
-def cluster9_investigation_intro(mo):
-    mo.md(r"""
-    ### Cluster 9: was excluding it justified?
-
-    Cluster 9 clears this notebook's stricter 40% doublet-dominated threshold on CMO hashing (44.6%) but not on Scrublet (29.3%), and not the original 50% bar on either metric. If it's genuinely a doublet-heavy cluster, we'd expect elevated total counts/genes (more RNA from two cells) alongside a correspondingly elevated Scrublet score; if it's a real, distinct cell state instead, its marker genes should be coherent and its Scrublet score should stay unremarkable despite the CMO-doublet calls.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def cluster9_investigation(
-    adata_flt,
-    alt,
-    cmo_assignment_computed,
-    ec_diff_palette,
-    mo,
-    okabe_ito_palette,
-    pd,
-):
-    cmo_assignment_computed  # ran after CMO tags were assigned
-
-    # See cluster9_investigation_intro above for the interpretation.
-    _mask9 = (adata_flt.obs["leiden"] == "9").to_numpy()
-    _sub9 = adata_flt.obs.loc[_mask9]
-
-    _status_order = ["Singlet", "Doublet", "Negative"]
-    _status_colors = {"Singlet": okabe_ito_palette[3], "Doublet": okabe_ito_palette[8], "Negative": okabe_ito_palette[0]}
-    _status_counts = _sub9["cmo_status_scanpy"].value_counts().reindex(_status_order).reset_index()
-    _status_counts.columns = ["cmo_status", "n_barcodes"]
-
-    _status_chart = alt.Chart(_status_counts).mark_bar().encode(
-        y=alt.Y("cmo_status:N", sort=_status_order, title="CMO status"),
-        x=alt.X("n_barcodes:Q", title="Number of barcodes"),
-        color=alt.Color(
-            "cmo_status:N",
-            scale=alt.Scale(domain=_status_order, range=[_status_colors[s] for s in _status_order]),
-            legend=None,
-        ),
-    ).properties(title="Cluster 9: CMO status", width=340, height=280).configure_view(strokeWidth=0)
-
-    _timepoint_order = ["d0", "d1", "d2", "d3", "d4"]
-    _timepoint_counts = (
-        _sub9.loc[_sub9["cmo_status_scanpy"] == "Singlet", "timepoint_scanpy"]
-        .value_counts().reindex(_timepoint_order).fillna(0).astype(int).reset_index()
-    )
-    _timepoint_counts.columns = ["timepoint", "n_barcodes"]
-
-    _timepoint_chart = alt.Chart(_timepoint_counts).mark_bar().encode(
-        y=alt.Y("timepoint:N", sort=_timepoint_order, title="Timepoint"),
-        x=alt.X("n_barcodes:Q", title="Number of barcodes"),
-        color=alt.Color(
-            "timepoint:N",
-            scale=alt.Scale(domain=_timepoint_order, range=[ec_diff_palette[t] for t in _timepoint_order]),
-            legend=None,
-        ),
-    ).properties(title="Cluster 9 singlets: timepoint composition", width=340, height=280).configure_view(strokeWidth=0)
-
-    def _tight_row(*items):
-        # mo.hstack with widths=None adds no wrapper/flex styling around children,
-        # so block-level chart divs just fill the row (no slack left for
-        # justify-content to redistribute). Build the flex row by hand instead.
-        _items_html = "".join(
-            f'<div style="flex: 0 0 auto;">{mo.as_html(it).text}</div>' for it in items
-        )
-        return mo.Html(f'<div style="display:flex; justify-content:flex-start; gap:1rem;">{_items_html}</div>')
-
-    _qc_table = pd.DataFrame({
-        "cluster_9": _sub9[["total_counts", "n_genes_by_counts", "pct_counts_mt", "scrublet_doublet_score"]].median(),
-        "rest_of_dataset": adata_flt.obs.loc[~_mask9, ["total_counts", "n_genes_by_counts", "pct_counts_mt", "scrublet_doublet_score"]].median(),
-    }).round(2)
-
-    mo.vstack([
-        _tight_row(_status_chart, _timepoint_chart),
-        mo.md(f"**Cluster 9 median QC vs. rest of dataset:**\n\n{_qc_table.to_markdown()}"),
-    ])
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ### Marker genes analysis
-
-    If cluster 9 is a real, distinct transitional population rather than a doublet or QC artifact, it should have a coherent marker gene signature, restricted to QC-passing cells and computed on the `pflog` layer (PFlog-normalized), since `.X` is still raw counts.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def cluster9_marker_genes(adata_flt, leiden_computed, sc):
-    leiden_computed  # ran after leiden clustering
-
-    # See the markdown above for the interpretation. Cluster 9 has zero cells
-    # surviving pass_strict_qc (it's doublet-dominated under this notebook's own
-    # cutoff), so this runs on the full adata_flt rather than the strict-QC view
-    # used for the other cluster deep-dives.
-    _view = adata_flt.copy()
-    sc.tl.rank_genes_groups(_view, groupby="leiden", groups=["9"], reference="rest", method="wilcoxon", layer="pflog", use_raw=False)
-
-    cluster9_markers = sc.get.rank_genes_groups_df(_view, group="9")
-    cluster9_markers["gene_symbol"] = cluster9_markers["names"].map(adata_flt.var["gene_symbol"])
-    cluster9_markers.head(25)
-    return
-
-
-@app.cell(hide_code=True)
-def cluster9_timepoint_margin_check(
-    adata_cmo,
-    adata_flt,
-    alt,
-    clr,
-    cmo_assignment_computed,
-    leiden_computed,
-    mo,
-    np,
-    pd,
-    positive,
-    thresholds,
-):
-    cmo_assignment_computed  # ran after CMO tags were assigned
-    leiden_computed  # ran after leiden clustering
-
-    # Does cluster 9's elevated CMO-doublet rate trace back to weak/borderline CMO
-    # staining specifically in its d3/d4 cells (own-CMO signal sitting close to
-    # threshold), or are they just as confidently called as d3/d4 cells elsewhere?
-    # For singlets, the "own" CMO is the one that actually clears its own
-    # threshold (the `positive` mask), not necessarily the one with the single
-    # highest raw CLR value across all 25 CMOs -- those differ for ~4% of
-    # singlets when a CMO with naturally higher background/threshold has a
-    # higher raw value than the true positive tag but still doesn't clear it.
-    from scipy.stats import gaussian_kde as _gaussian_kde_c9margin
-
-    _positive_idx = np.argmax(positive, axis=1)
-    _own_clr = clr[np.arange(len(clr)), _positive_idx]
-    _own_threshold = thresholds[_positive_idx]
-    _margin = _own_clr - _own_threshold
-
-    _margin_df = pd.DataFrame({"margin": _margin}, index=adata_cmo.obs_names)
-    _common = _margin_df.index.intersection(adata_flt.obs_names)
-    _margin_df = _margin_df.loc[_common]
-    _margin_df["leiden"] = adata_flt.obs.loc[_common, "leiden"].to_numpy()
-    _margin_df["timepoint_scanpy"] = adata_flt.obs.loc[_common, "timepoint_scanpy"].to_numpy()
-    _margin_df["cmo_status_scanpy"] = adata_flt.obs.loc[_common, "cmo_status_scanpy"].to_numpy()
-
-    _singlets = _margin_df[_margin_df["cmo_status_scanpy"] == "Singlet"]
-
-
-    def _margin_density_chart(_timepoint):
-        _tp_singlets = _singlets[_singlets["timepoint_scanpy"] == _timepoint]
-        _c9 = _tp_singlets.loc[_tp_singlets["leiden"] == "9", "margin"].to_numpy()
-        _other = _tp_singlets.loc[_tp_singlets["leiden"] != "9", "margin"].to_numpy()
-
-        _grid = np.linspace(_tp_singlets["margin"].min(), _tp_singlets["margin"].max(), 200)
-        _density_df = pd.DataFrame({
-            "margin": np.tile(_grid, 2),
-            "density": np.concatenate([
-                _gaussian_kde_c9margin(_c9)(_grid),
-                _gaussian_kde_c9margin(_other)(_grid),
-            ]),
-            "group": [f"Cluster 9 (n={len(_c9):,})"] * 200 + [f"Other clusters (n={len(_other):,})"] * 200,
-        })
-
-        _chart = alt.Chart(_density_df).mark_line(interpolate="monotone").encode(
-            x=alt.X("margin:Q", title="Own (positive) CMO CLR value minus its detection threshold"),
-            y=alt.Y("density:Q", title="Density"),
-            color=alt.Color("group:N", title=None),
-        ).properties(
-            title=f"{_timepoint} singlets: CMO signal margin-to-threshold, cluster 9 vs. rest",
-            width=500, height=320,
-        ).configure_view(strokeWidth=0)
-
-        return _chart, np.median(_c9), np.median(_other), len(_c9), len(_other)
-
-
-    def _tight_row(*items):
-        _items_html = "".join(
-            f'<div style="flex: 0 0 auto;">{mo.as_html(it).text}</div>' for it in items
-        )
-        return mo.Html(f'<div style="display:flex; justify-content:flex-start; gap:1rem;">{_items_html}</div>')
-
-
-    _chart_d3, _median_c9_d3, _median_other_d3, _n_c9_d3, _n_other_d3 = _margin_density_chart("d3")
-    _chart_d4, _median_c9_d4, _median_other_d4, _n_c9_d4, _n_other_d4 = _margin_density_chart("d4")
-
-    mo.vstack([
-        _tight_row(_chart_d3, _chart_d4),
-        mo.md(
-            f"**Median margin-to-threshold:** "
-            f"d3 -- cluster 9 = {_median_c9_d3:.2f} (n={_n_c9_d3:,}), other clusters = {_median_other_d3:.2f} (n={_n_other_d3:,}); "
-            f"d4 -- cluster 9 = {_median_c9_d4:.2f} (n={_n_c9_d4:,}), other clusters = {_median_other_d4:.2f} (n={_n_other_d4:,})."
-        ),
-    ])
-    return
-
-
-@app.cell(hide_code=True)
-def cluster9_second_best_cmo_check(
-    adata_cmo,
-    adata_flt,
-    alt,
-    clr,
-    cmo_assignment_computed,
-    leiden_computed,
-    mo,
-    np,
-    pd,
-    thresholds,
-):
-    cmo_assignment_computed  # ran after CMO tags were assigned
-    leiden_computed  # ran after leiden clustering
-
-    # Companion check to cluster9_timepoint_margin_check: instead of how confident
-    # the WINNING CMO call is, this looks at the RUNNER-UP -- how close the
-    # second-best CMO comes to also clearing its own threshold. A near-miss
-    # runner-up (gap close to 0) means the singlet call is one noisy read away
-    # from being flagged a doublet; a large negative gap means it's a clean call
-    # regardless of how the top CMO itself looks.
-    _gap_all = clr - thresholds  # (n_cells, 25): each CMO's own margin to its threshold
-    _second_best_gap = -np.sort(-_gap_all, axis=1)[:, 1]  # runner-up's gap
-
-    _gap_df = pd.DataFrame({"second_best_gap": _second_best_gap}, index=adata_cmo.obs_names)
-    _common = _gap_df.index.intersection(adata_flt.obs_names)
-    _gap_df = _gap_df.loc[_common]
-    _gap_df["leiden"] = adata_flt.obs.loc[_common, "leiden"].to_numpy()
-    _gap_df["timepoint_scanpy"] = adata_flt.obs.loc[_common, "timepoint_scanpy"].to_numpy()
-    _gap_df["cmo_status_scanpy"] = adata_flt.obs.loc[_common, "cmo_status_scanpy"].to_numpy()
-
-    _singlets = _gap_df[_gap_df["cmo_status_scanpy"] == "Singlet"]
-
-    from scipy.stats import gaussian_kde as _gaussian_kde_c9secondbest
-
-
-    def _second_best_density_chart(_timepoint):
-        _tp_singlets = _singlets[_singlets["timepoint_scanpy"] == _timepoint]
-        _c9 = _tp_singlets.loc[_tp_singlets["leiden"] == "9", "second_best_gap"].to_numpy()
-        _other = _tp_singlets.loc[_tp_singlets["leiden"] != "9", "second_best_gap"].to_numpy()
-
-        _grid = np.linspace(_tp_singlets["second_best_gap"].min(), _tp_singlets["second_best_gap"].max(), 200)
-        _density_df = pd.DataFrame({
-            "second_best_gap": np.tile(_grid, 2),
-            "density": np.concatenate([
-                _gaussian_kde_c9secondbest(_c9)(_grid),
-                _gaussian_kde_c9secondbest(_other)(_grid),
-            ]),
-            "group": [f"Cluster 9 (n={len(_c9):,})"] * 200 + [f"Other clusters (n={len(_other):,})"] * 200,
-        })
-
-        _chart = alt.Chart(_density_df).mark_line(interpolate="monotone").encode(
-            x=alt.X("second_best_gap:Q", title="Runner-up CMO: CLR value minus its own threshold"),
-            y=alt.Y("density:Q", title="Density"),
-            color=alt.Color("group:N", title=None),
-        ).properties(
-            title=f"{_timepoint} singlets: runner-up CMO gap-to-threshold, cluster 9 vs. rest",
-            width=500, height=320,
-        ).configure_view(strokeWidth=0)
-
-        _pct_near_miss_c9 = (_c9 > -0.1).mean() * 100
-        _pct_near_miss_other = (_other > -0.1).mean() * 100
-        return _chart, np.median(_c9), np.median(_other), _pct_near_miss_c9, _pct_near_miss_other, len(_c9), len(_other)
-
-
-    def _tight_row(*items):
-        _items_html = "".join(
-            f'<div style="flex: 0 0 auto;">{mo.as_html(it).text}</div>' for it in items
-        )
-        return mo.Html(f'<div style="display:flex; justify-content:flex-start; gap:1rem;">{_items_html}</div>')
-
-
-    _chart_d3, _med_c9_d3, _med_other_d3, _near_c9_d3, _near_other_d3, _n_c9_d3, _n_other_d3 = _second_best_density_chart("d3")
-    _chart_d4, _med_c9_d4, _med_other_d4, _near_c9_d4, _near_other_d4, _n_c9_d4, _n_other_d4 = _second_best_density_chart("d4")
-
-    mo.vstack([
-        _tight_row(_chart_d3, _chart_d4),
-        mo.md(
-            f"**Median runner-up gap:** "
-            f"d3 -- cluster 9 = {_med_c9_d3:.2f} (n={_n_c9_d3:,}, {_near_c9_d3:.1f}% near-miss), "
-            f"other clusters = {_med_other_d3:.2f} (n={_n_other_d3:,}, {_near_other_d3:.1f}% near-miss); "
-            f"d4 -- cluster 9 = {_med_c9_d4:.2f} (n={_n_c9_d4:,}, {_near_c9_d4:.1f}% near-miss), "
-            f"other clusters = {_med_other_d4:.2f} (n={_n_other_d4:,}, {_near_other_d4:.1f}% near-miss). "
-            f"\"Near-miss\" = runner-up CMO within 0.1 CLR units of clearing its own threshold."
-        ),
-    ])
-    return
-
-
-@app.cell(hide_code=True)
-def cluster9_scrublet_vs_cmo(
-    adata_flt,
-    alt,
-    cmo_assignment_computed,
-    leiden_computed,
-    mo,
-    np,
-    okabe_ito_palette,
-    pd,
-):
-    cmo_assignment_computed  # ran after CMO tags were assigned
-    leiden_computed  # ran after leiden clustering
-
-    # Within cluster 9, how does Scrublet's doublet call relate to the CMO-hashing
-    # classification? If the two methods were catching the same doublets, CMO
-    # status among Scrublet-flagged cells should look very different from CMO
-    # status among Scrublet-clean cells; if CMO hashing is picking up a largely
-    # separate signal (e.g. same-CMO doublets Scrublet can still catch
-    # transcriptomically, or vice versa), the two breakdowns should look similar.
-    _mask9 = (adata_flt.obs["leiden"] == "9").to_numpy()
-    _sub9 = adata_flt.obs.loc[_mask9]
-
-    _status_order = ["Singlet", "Doublet", "Negative"]
-    _status_colors = {"Singlet": okabe_ito_palette[3], "Doublet": okabe_ito_palette[8], "Negative": okabe_ito_palette[0]}
-
-    _scrublet_group = np.where(_sub9["scrublet_predicted_doublet"], "Scrublet doublet", "Scrublet not doublet")
-    _cross = pd.crosstab(_scrublet_group, _sub9["cmo_status_scanpy"])
-    _cross_pct = _cross.div(_cross.sum(axis=1), axis=0) * 100
-
-    _plot_df = _cross_pct.reset_index().melt(id_vars="row_0", var_name="cmo_status", value_name="pct")
-    _plot_df.columns = ["scrublet_group", "cmo_status", "pct"]
-    _n_by_group = _cross.sum(axis=1)
-    _plot_df["n_group"] = _plot_df["scrublet_group"].map(_n_by_group)
-    _plot_df["label"] = _plot_df["scrublet_group"] + " (n=" + _plot_df["n_group"].astype(str) + ")"
-
-    _chart = alt.Chart(_plot_df).mark_bar().encode(
-        y=alt.Y("label:N", title=None, sort=["Scrublet doublet", "Scrublet not doublet"]),
-        x=alt.X("pct:Q", title="% of barcodes"),
-        color=alt.Color(
-            "cmo_status:N",
-            title="CMO status",
-            sort=_status_order,
-            scale=alt.Scale(domain=_status_order, range=[_status_colors[s] for s in _status_order]),
-        ),
-        order=alt.Order("cmo_status:N", sort="ascending"),
-        tooltip=["scrublet_group", "cmo_status", alt.Tooltip("pct:Q", format=".1f")],
-    ).properties(
-        title="Cluster 9: CMO classification by Scrublet doublet status",
-        width=550, height=150,
-    ).configure_view(strokeWidth=0)
-
-    mo.vstack([
-        _chart,
-        mo.md(_cross.to_markdown()),
-    ])
-    return
-
-
-@app.cell
-def cluster9_pseudobulk_scatter_by_timepoint(
-    adata_flt,
-    cmo_assignment_computed,
-    leiden_computed,
-    mo,
-    np,
-    okabe_ito_palette,
-    plt,
-):
-    cmo_assignment_computed  # ran after CMO tags were assigned
-    leiden_computed  # ran after leiden clustering
-
-    # Final check: pseudobulk gene expression correlation, cluster 9 vs. every
-    # other cluster, restricted to protein-coding genes and to the cells we'd
-    # actually keep (CMO Singlet, not Scrublet-predicted-doublet). A tight
-    # diagonal means cluster 9's cells look transcriptionally like same-timepoint
-    # cells anywhere else in the dataset.
-    _pc_mask = (adata_flt.var["gene_type"] == "protein_coding").to_numpy()
-    _kept_mask = (adata_flt.obs["cmo_status_scanpy"] == "Singlet") & (~adata_flt.obs["scrublet_predicted_doublet"])
-    _c9_mask = (adata_flt.obs["leiden"] == "9")
-    _pflog = adata_flt.layers["pflog"]
-
-
-    def _pseudobulk_scatter(_timepoint):
-        _tp_mask = (adata_flt.obs["timepoint_scanpy"] == _timepoint)
-        _group_c9 = (_kept_mask & _tp_mask & _c9_mask).to_numpy()
-        _group_other = (_kept_mask & _tp_mask & ~_c9_mask).to_numpy()
-
-        _pb_c9 = np.asarray(_pflog[_group_c9][:, _pc_mask].mean(axis=0)).flatten()
-        _pb_other = np.asarray(_pflog[_group_other][:, _pc_mask].mean(axis=0)).flatten()
-        _r = np.corrcoef(_pb_c9, _pb_other)[0, 1]
-
-        _fig, _ax = plt.subplots(figsize=(5, 5))
-        _ax.scatter(_pb_other, _pb_c9, s=4, alpha=0.2, color=okabe_ito_palette[0])
-        _lims = [0, max(_pb_c9.max(), _pb_other.max())]
-        _ax.plot(_lims, _lims, color=okabe_ito_palette[6], linestyle="--", linewidth=1)
-        _ax.set_xlabel(f"Other clusters (n={_group_other.sum():,} cells)")
-        _ax.set_ylabel(f"Cluster 9 (n={_group_c9.sum():,} cells)")
-        _ax.set_title(f"{_timepoint}: pseudobulk protein-coding expression\nPearson r = {_r:.3f}, n_genes = {len(_pb_c9):,}")
-        plt.tight_layout()
-        return _fig
-
-
-    _fig_d3 = _pseudobulk_scatter("d3")
-    _fig_d4 = _pseudobulk_scatter("d4")
-
-    mo.hstack([_fig_d3, _fig_d4])
-    return
-
-
-@app.cell(hide_code=True)
-def cluster9_conclusion(mo):
-    mo.md(r"""
-    ## Cluster 9: likely pervasive homotypic doublets, not a distinct real population
-
-    Cluster 9 (1,113 cells) splits 50.9% Singlet, 44.6% Doublet, 4.6% Negative by CMO hashing, and its singlets are almost entirely d3/d4 (297 d3, 262 d4 of 566, 98.8%), a cleaner two-timepoint split than any other cluster investigated in this notebook. Its QC profile initially looked mixed: total counts and genes-per-cell are elevated relative to the rest of the dataset (2,571 vs. 1,789; 1,500 vs. 1,203), consistent with doublets, but its Scrublet doublet score is *lower* than the rest of the dataset (0.146 vs. 0.169), which on its own argues against a doublet-heavy population.
-
-    **Marker genes** (`cluster9_marker_genes`, Wilcoxon vs. rest on the full `adata_flt`, since none of this cluster survives `pass_strict_qc`) show a coherent, specific endothelial identity, not a stress or debris signature: `FLT1` (VEGFR1), `MECOM`, `NRP1`, and cytoskeletal/migration genes (`VAV3`, `ZEB1`, `KALRN`, `PLEKHG1`, `DOCK4`, `LIMCH1`). No mitochondrial or heat-shock genes appear near the top.
-
-    **Neither of the two follow-up checks on CMO call quality supports a borderline-thresholding explanation.** `cluster9_timepoint_margin_check` shows cluster 9's singlets clear their own CMO's threshold with a *larger* margin than singlets elsewhere at the same timepoint (d3: 1.53 vs. 1.13; d4: 1.11 vs. 0.87), not a smaller one, so these aren't marginal calls that happened to fall on the "singlet" side. `cluster9_second_best_cmo_check` shows the runner-up CMO's own gap-to-threshold is essentially identical to the rest of the dataset (d3: -0.35 vs. -0.34; d4: -0.30 vs. -0.32), so these singlets aren't one noisy read away from being called doublets either. Both checks point the same direction: the CMO calls themselves are clean.
-
-    **`cluster9_scrublet_vs_cmo` shows the two doublet detectors only partially agree within this cluster**: of the 326 Scrublet-flagged doublets, 64.4% are also CMO-doublet, but 34.0% get a clean CMO-singlet call; of the 787 Scrublet-clean cells, 36.3% are still called CMO-doublet. Each method is catching cells the other misses, exactly the pattern expected if CMO hashing's blind spot (same-CMO, same-sample doublets, established in `doublet_cluster_conclusion`) and Scrublet's blind spot (homotypic doublets that don't produce a mixed transcriptomic signature) are two largely independent failure modes rather than the same signal seen twice.
-
-    **The decisive check restricts to the cells that would actually survive both filters** (CMO Singlet, not Scrublet-predicted-doublet) and compares them against same-timepoint cells kept from every other cluster, protein-coding genes only. `cluster9_pseudobulk_scatter_by_timepoint` shows these "clean" cluster 9 cells are highly correlated with same-timepoint cells elsewhere at the pseudobulk level (d3 r=0.984, d4 r=0.980) — the same broad transcriptional identity, not a distinct cell type. But they still carry 1.86-1.87x higher total counts and 1.64-1.66x more genes detected than their same-timepoint counterparts kept elsewhere. That fold-change is essentially identical to the dataset-wide gap between confirmed CMO-Doublets and CMO-Singlets (1.64x total counts), even though these specific cells passed both the CMO-singlet and Scrublet-clean filters.
-
-    **Interpretation:** the combination of a real, coherent endothelial identity, an unremarkable Scrublet score, clean CMO threshold calls, and a near-2x count/gene excess matching the dataset's own doublet fold-change is best explained by pervasive **homotypic doublets**: two cells of the same differentiated endothelial identity and the same CMO tag combining in one droplet. This would be invisible to both detectors by construction, same tag means CMO hashing sees one signal instead of two, and same transcriptional program means Scrublet's mixture-based detection has no aberrant signature to key off of. Practically, this means simply keeping "CMO Singlet and not Scrublet-predicted-doublet" barcodes from cluster 9 would still leave a substantial fraction of likely doublets in the dataset. Cluster 9 remains excluded via strict QC; if any subset of it is rescued for the paper, it should not be on the strength of the CMO-singlet/Scrublet-clean filter alone.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    # Post filtering
-    """)
-    return
-
-
-@app.cell
-def rna_adata_post_filter(
-    adata_flt,
-    rescue_computed,
-    sc,
-    scclr,
-    strict_qc_computed,
-):
-    strict_qc_computed  # ran after strict QC flags were computed
-    rescue_computed  # ran after rescue tags were computed
-
-    def _run_post_filter_pipeline(adata):
-        scclr.pp.pflog(adata, target="auto")
-        sc.pp.highly_variable_genes(adata, layer="pflog", n_top_genes=2000)
-        _ncomps = 50
-        _ncv = 2 * _ncomps + 1
-        scclr.tl.pca(adata, n_comps=_ncomps, ncv=_ncv)
-        sc.pp.neighbors(adata, random_state=0)
-        sc.tl.leiden(adata, flavor="igraph", resolution=0.5, n_iterations=2, random_state=0)
-        sc.tl.umap(adata)
-        return True
-
-    rna_adata = adata_flt[adata_flt.obs["pass_strict_qc"]].copy()
-    rna_adata_post_filter_computed = _run_post_filter_pipeline(rna_adata)
-    rna_adata
-    return rna_adata, rna_adata_post_filter_computed
-
-
-@app.cell(hide_code=True)
-def umap_post_filter_leiden_mito(
-    ec_diff_palette,
-    rna_adata,
-    rna_adata_post_filter_computed,
-    sc,
-):
-    rna_adata_post_filter_computed  # ran after normalization, HVG, PCA, neighbors, leiden, and UMAP
-
-    sc.pl.umap(
-        rna_adata,
-        color=["leiden", "pct_counts_mt"],
-        cmap="cividis",
-        ncols=2,
-        size=5,
-        title=["UMAP colored by leiden cluster", "UMAP colored by %mito"],
-    )
-
-    # Separate call: rescued_cmo_tag needs the timepoint-specific ec_diff_palette,
-    # not scanpy's default categorical palette, since these are the same
-    # endothelial-differentiation timepoint colors used everywhere else.
-    sc.pl.umap(
-        rna_adata,
-        color="rescued_cmo_tag",
-        palette=ec_diff_palette,
-        size=5,
-        title="UMAP colored by final CMO tags",
-    )
-    return
-
-
-@app.cell(hide_code=True)
-def old_vs_new_cluster_confusion_matrix(
-    adata_flt,
-    alt,
-    pd,
-    rna_adata,
-    rna_adata_post_filter_computed,
-):
-    rna_adata_post_filter_computed  # ran after the post-filter reclustering
-
-    # Confusion matrix: how the pre-strict-QC leiden clusters (adata_flt, computed
-    # on all lenient-QC-passing barcodes) map onto the post-filter leiden
-    # clusters (rna_adata, recomputed from scratch on just the pass_strict_qc
-    # population). Cluster IDs are arbitrary and not comparable by number across
-    # the two clusterings, so this crosstab is the only way to track cluster
-    # identity across the two rounds.
-    _old_cluster = adata_flt.obs.loc[rna_adata.obs_names, "leiden"].rename("old_cluster")
-    _new_cluster = rna_adata.obs["leiden"].rename("new_cluster")
-
-    _confusion = pd.crosstab(_old_cluster, _new_cluster)
-
-    # Rows (old clusters) kept in plain numeric order as the fixed reference axis.
-    # Columns (new clusters) reordered by their dominant old cluster (the row
-    # each column has the most cells in), so matches line up close to the
-    # diagonal against that fixed reference instead of numeric new-cluster ID,
-    # which carries no relationship to the old IDs.
-    _old_order = sorted(_confusion.index, key=int)
-    _new_order = _confusion.idxmax(axis=0).sort_values(key=lambda s: s.astype(int)).index.tolist()
-    _old_rank = {v: i for i, v in enumerate(_old_order)}
-    _new_rank = {v: i for i, v in enumerate(_new_order)}
-
-    _confusion_long = _confusion.reset_index().melt(id_vars="old_cluster", var_name="new_cluster", value_name="n_cells")
-    _confusion_long = _confusion_long[_confusion_long["n_cells"] > 0].copy()
-    # Altair's sort=<list> shorthand generates its own rank lookup internally,
-    # but that mechanism silently breaks under VegaFusion for one of the two
-    # encodings here (every row falls back to the same rank, so no ordering is
-    # applied). Precomputing the rank as an explicit data column and sorting on
-    # that via EncodingSortField sidesteps it entirely.
-    _confusion_long["old_rank"] = _confusion_long["old_cluster"].astype(str).map(_old_rank)
-    _confusion_long["new_rank"] = _confusion_long["new_cluster"].astype(str).map(_new_rank)
-
-    _heatmap = alt.Chart(_confusion_long).mark_rect().encode(
-        x=alt.X("new_cluster:N", title="New (post-filter) cluster", sort=alt.EncodingSortField(field="new_rank", op="min")),
-        y=alt.Y("old_cluster:N", title="Old (pre-strict-QC) cluster", sort=alt.EncodingSortField(field="old_rank", op="min")),
-        color=alt.Color("n_cells:Q", title="Cells", scale=alt.Scale(scheme="cividis")),
-        tooltip=["old_cluster", "new_cluster", "n_cells"],
-    )
-    _labels = alt.Chart(_confusion_long).mark_text(fontSize=9).encode(
-        x=alt.X("new_cluster:N", sort=alt.EncodingSortField(field="new_rank", op="min")),
-        y=alt.Y("old_cluster:N", sort=alt.EncodingSortField(field="old_rank", op="min")),
-        text="n_cells:Q",
-        color=alt.condition(alt.datum.n_cells > _confusion_long["n_cells"].max() / 2, alt.value("black"), alt.value("white")),
-    )
-
-    (_heatmap + _labels).properties(
-        title="Old vs. new leiden cluster assignment (cell counts, columns ordered to show correspondence)",
-        width=450, height=450,
-    ).configure_view(strokeWidth=0)
     return
 
 
@@ -3520,10 +2688,10 @@ def atac_import_intro(mo):
 
 
 @app.cell
-def load_strict_qc_whitelist(ch1_outdir_root, pd):
+def load_strict_qc_whitelist(outdir_root, pd):
     # See atac_import_intro above.
     _qc_annotations = pd.read_csv(
-        ch1_outdir_root / "adata_flt_qc_annotations.tsv", sep="\t", index_col=0
+        outdir_root / "adata_flt_qc_annotations.tsv", sep="\t", index_col=0
     )
     assigned_cells = _qc_annotations.index[_qc_annotations["pass_strict_qc"]].to_list()
     len(assigned_cells)
@@ -3533,13 +2701,13 @@ def load_strict_qc_whitelist(ch1_outdir_root, pd):
 @app.cell
 def import_atac_fragments(
     assigned_cells,
-    ch1_data_root_path,
     chrom_dict,
+    data_root_path,
     igvf_gencode_gtf_path,
     snap,
 ):
     atac_adata = snap.pp.import_fragments(
-        ch1_data_root_path / "atac/fragments/IGVFFI8123KHUC.bed.gz",
+        data_root_path / "atac/fragments/IGVFFI6722CCZW.bed.gz",
         sorted_by_barcode=False,
         chrom_sizes=chrom_dict,
         whitelist=assigned_cells,
@@ -3572,7 +2740,7 @@ def atac_qc_thresholds(atac_adata):
     # Fixed thresholds for visibility only, see the note below: we don't actually
     # filter on these, the ATAC barcode set already inherits the RNA pass_strict_qc
     # whitelist at import time.
-    min_frag = 500
+    min_frag = 1000
     min_tsse = 5.0
     return df, min_frag, min_tsse
 
@@ -3586,7 +2754,7 @@ def atac_fragment_tsse_plot(alt, df, min_frag, min_tsse, okabe_ito_palette):
     plot_df["pass_qc"] = (
         (plot_df["n_fragment"] >= min_frag) &
         (plot_df["tsse"] >= min_tsse) &
-        (plot_df["n_fragment"] <= 15_000)
+        (plot_df["n_fragment"] <= 70_000)
     ).astype(str)
 
     print(plot_df["pass_qc"].value_counts())
@@ -3615,40 +2783,6 @@ def atac_fragment_tsse_plot(alt, df, min_frag, min_tsse, okabe_ito_palette):
 
     (top_hist & (scatter | right_hist)).resolve_legend(color="shared")
     return (plot_df,)
-
-
-@app.cell
-def map_rescued_cmo_tag_to_atac(
-    adata_flt,
-    atac_adata,
-    atac_spectral_umap_leiden_computed,
-    rescue_computed,
-):
-    rescue_computed  # ran after rescue tags were computed
-    # Forces a deterministic write order into atac_adata.obs: both this cell
-    # and atac_spectral_umap_leiden mutate atac_adata.obs in place (adding
-    # "rescued_cmo_tag" and "leiden" respectively) with no data dependency
-    # between them, so without this, which column lands first -- and thus
-    # atac_adata.obs's final column order -- depends on arbitrary execution
-    # order rather than being reproducible.
-    atac_spectral_umap_leiden_computed  # ran after spectral embedding, UMAP, KNN, and Leiden clustering
-
-    def _map_rescued_cmo_tag_to_atac(atac_adata, adata_flt):
-        # Use rescued_cmo_tag, not the raw timepoint_scanpy, so cluster-rescued
-        # negatives keep their assigned timepoint here too.
-        atac_adata.obs["rescued_cmo_tag"] = adata_flt.obs.loc[atac_adata.obs_names, "rescued_cmo_tag"].astype("category")
-        return True
-
-    rescued_cmo_tag_mapped = _map_rescued_cmo_tag_to_atac(atac_adata, adata_flt)
-    return (rescued_cmo_tag_mapped,)
-
-
-@app.cell
-def atac_timepoint_counts(atac_adata, rescued_cmo_tag_mapped):
-    rescued_cmo_tag_mapped  # ran after rescued_cmo_tag was mapped onto atac_adata
-
-    atac_adata.obs["rescued_cmo_tag"].value_counts()
-    return
 
 
 @app.cell
@@ -3704,6 +2838,52 @@ def atac_spectral_umap_leiden(atac_adata, features_selected, snap):
 
     atac_spectral_umap_leiden_computed = _run_atac_spectral_umap_leiden(atac_adata)
     return (atac_spectral_umap_leiden_computed,)
+
+
+@app.cell
+def map_rescued_cmo_tag_to_atac(
+    adata_flt,
+    atac_adata,
+    atac_spectral_umap_leiden_computed,
+    cmo_assignment_computed,
+):
+    cmo_assignment_computed  # ran after CMO tags were assigned, for timepoint_scanpy below
+    # Forces a deterministic write order into atac_adata.obs: both this cell
+    # and atac_spectral_umap_leiden mutate atac_adata.obs in place (adding
+    # "rescued_cmo_tag" and "leiden" respectively) with no data dependency
+    # between them, so without this, which column lands first -- and thus
+    # atac_adata.obs's final column order -- depends on arbitrary execution
+    # order rather than being reproducible.
+    atac_spectral_umap_leiden_computed  # ran after spectral embedding, UMAP, KNN, and Leiden clustering
+
+    def _map_rescued_cmo_tag_to_atac(atac_adata, adata_flt):
+        # No cluster-consensus rescue for this dataset (rescue was retired, see
+        # rescue_negative_tags_intro history) -- every barcode here already
+        # passed pass_strict_qc, i.e. is a direct CMO Singlet, so timepoint_scanpy
+        # is already a real, direct d0-d4 label for all of them.
+        # remove_unused_categories() matters here: timepoint_scanpy's dtype
+        # carries "Negative"/"Doublet" categories from the full adata_flt, even
+        # though zero ATAC barcodes have those values -- sc.pl.umap builds its
+        # palette lookup from ALL declared categories, not just observed ones,
+        # and KeyErrors on any category missing from ec_diff_palette otherwise.
+        atac_adata.obs["rescued_cmo_tag"] = (
+            adata_flt.obs.loc[atac_adata.obs_names, "timepoint_scanpy"]
+            .astype("category")
+            .cat.remove_unused_categories()
+        )
+        return True
+
+    rescued_cmo_tag_mapped = _map_rescued_cmo_tag_to_atac(atac_adata, adata_flt)
+
+    return (rescued_cmo_tag_mapped,)
+
+
+@app.cell
+def atac_timepoint_counts(atac_adata, rescued_cmo_tag_mapped):
+    rescued_cmo_tag_mapped  # ran after rescued_cmo_tag was mapped onto atac_adata
+
+    atac_adata.obs["rescued_cmo_tag"].value_counts()
+    return
 
 
 @app.cell(hide_code=True)
@@ -3775,6 +2955,8 @@ def atac_umap_by_timepoint_and_leiden(
 
 @app.cell(hide_code=True)
 def atac_umap_and_confusion_vs_rna_cluster(
+    adata_clean,
+    adata_clean_clustering_computed,
     alt,
     atac_adata,
     atac_spectral_umap_leiden_computed,
@@ -3783,18 +2965,16 @@ def atac_umap_and_confusion_vs_rna_cluster(
     mo,
     okabe_ito_palette,
     pd,
-    rna_adata,
-    rna_adata_post_filter_computed,
 ):
     atac_spectral_umap_leiden_computed  # ran after ATAC spectral embedding, UMAP, and Leiden clustering
-    rna_adata_post_filter_computed  # ran after the post-filter RNA reclustering
+    adata_clean_clustering_computed  # ran after leiden clustering on adata_clean
 
-    # atac_adata's barcodes are a subset of rna_adata's (every ATAC barcode has an
+    # atac_adata's barcodes are a subset of adata_clean's (every ATAC barcode has an
     # RNA counterpart here), so no explicit intersection is needed, but the count
     # is still worth stating explicitly rather than assuming it.
-    _shared_barcodes = atac_adata.obs_names.intersection(rna_adata.obs_names)
+    _shared_barcodes = atac_adata.obs_names.intersection(adata_clean.obs_names)
     _n_shared = len(_shared_barcodes)
-    _rna_cluster_on_atac = rna_adata.obs.loc[_shared_barcodes, "leiden"]
+    _rna_cluster_on_atac = adata_clean.obs.loc[_shared_barcodes, "leiden"]
 
     _rna_categories = sorted(_rna_cluster_on_atac.astype(str).unique(), key=int)
     _rna_palette = {_cl: okabe_ito_palette[_i % len(okabe_ito_palette)] for _i, _cl in enumerate(_rna_categories)}
@@ -3822,9 +3002,8 @@ def atac_umap_and_confusion_vs_rna_cluster(
 
     _confusion_long = _confusion.reset_index().melt(id_vars="atac_cluster", var_name="rna_cluster", value_name="n_cells")
     _confusion_long = _confusion_long[_confusion_long["n_cells"] > 0].copy()
-    # Altair's sort=<list> shorthand can silently fail under VegaFusion (see
-    # old_vs_new_cluster_confusion_matrix); precomputing the rank as an explicit
-    # data column and sorting via EncodingSortField sidesteps it.
+    # Altair's sort=<list> shorthand can silently fail under VegaFusion; precomputing
+    # the rank as an explicit data column and sorting via EncodingSortField sidesteps it.
     _confusion_long["atac_rank"] = _confusion_long["atac_cluster"].map(_atac_rank)
     _confusion_long["rna_rank"] = _confusion_long["rna_cluster"].map(_rna_rank)
 
@@ -3856,7 +3035,7 @@ def atac_umap_and_confusion_vs_rna_cluster(
         return mo.Html(f'<div style="display:flex; justify-content:flex-start; gap:1rem;">{_items_html}</div>')
 
     mo.vstack([
-        mo.md(f"**{_n_shared:,} barcodes shared between `atac_adata` and `rna_adata`** (of {atac_adata.n_obs:,} ATAC and {rna_adata.n_obs:,} RNA barcodes); both panels below are restricted to this shared set."),
+        mo.md(f"**{_n_shared:,} barcodes shared between `atac_adata` and `adata_clean`** (of {atac_adata.n_obs:,} ATAC and {adata_clean.n_obs:,} RNA barcodes); both panels below are restricted to this shared set."),
         _tight_row(_umap_chart, _confusion_chart),
     ])
     return
@@ -3930,22 +3109,22 @@ def ncount_atac_vs_rna_counts(
 
 @app.cell
 def saving_h5ad(
+    adata_clean,
+    adata_clean_clustering_computed,
     atac_adata,
     atac_spectral_umap_leiden_computed,
-    ch1_outdir_root,
+    outdir_root,
     project_root,
-    rna_adata,
-    rna_adata_post_filter_computed,
 ):
-    rna_adata_post_filter_computed  # ran after normalization, HVG, PCA, neighbors, leiden, and UMAP (RNA)
+    adata_clean_clustering_computed  # ran after normalization, HVG, PCA, neighbors, leiden, and UMAP (RNA)
     atac_spectral_umap_leiden_computed  # ran after spectral embedding, UMAP, KNN, and Leiden clustering (ATAC)
 
     # Saving the RNA and ATAC anndata objects.
-    _rna_outfile = ch1_outdir_root / "rna_adata.h5ad"
-    _atac_outfile = ch1_outdir_root / "atac_adata.h5ad"
+    _rna_outfile = outdir_root / "rna_adata.h5ad"
+    _atac_outfile = outdir_root / "atac_adata.h5ad"
     _rna_outfile.parent.mkdir(parents=True, exist_ok=True)
 
-    rna_adata.write_h5ad(_rna_outfile)
+    adata_clean.write_h5ad(_rna_outfile)
     atac_adata.write_h5ad(_atac_outfile)
 
     # Show only the paths relative to the repo, not the full local filesystem path
