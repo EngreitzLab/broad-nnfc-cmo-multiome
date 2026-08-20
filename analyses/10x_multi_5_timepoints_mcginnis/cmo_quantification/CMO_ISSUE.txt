@@ -1,0 +1,194 @@
+McGinnis dataset CMO quantification issue
+==========================================
+
+PROBLEM
+-------
+The mcginnis dataset's CMO (Cell Multiplexing Oligo) quantification is broken.
+The count matrix at data/10x_multi_5_timepoints_mcginnis/cmo_counts/adata.h5ad
+has 23 CMO tags (wtc11_endo_d0_1 .. wtc11_endo_d4_5, uneven: 3 reps for d0,
+5 for d1-d4), but the actual counts are massively skewed onto a single tag:
+
+    CMO                  median raw count   % cells nonzero
+    wtc11_endo_d1_5      22                 100%
+    wtc11_endo_d2_3      2                  83%
+    all 21 others        0                  mostly <20%, two are exactly 0
+                                             everywhere (d3_3, d1_3)
+
+Because CMO hashing picks each cell's "top" tag by highest CLR-normalized
+signal, this collapses almost every singlet/doublet call onto d1, regardless
+of the actual timepoint.
+
+This is a real upstream data problem, not a notebook bug. For comparison,
+Chris McGinnis's own independent classification
+(data/10x_multi_5_timepoints_mcginnis/cmo_counts/final_anno_igvf0.tsv,
+column sample_multiseq) shows a healthy, roughly even spread across all 23
+tags (267-934 cells each, all 5 timepoints well represented). So a correct
+ground truth exists -- it's specifically our own cmo_counts/adata.h5ad
+(produced by quantify_cmo_tags.py, the kite/kallisto CMO quantification)
+that's broken.
+
+WHAT WAS ALREADY RULED OUT
+---------------------------
+- The CMO barcode reference itself (IGVFFI5955PKRW, 23 distinct 8bp
+  sequences) is well-designed -- minimum pairwise Hamming distance of 4, and
+  the dominant tag (CGACCAGC / d1_5) isn't unusually close to any other.
+  Not a barcode-collision issue.
+- The notebook-level mapping/normalization bugs found along the way are real
+  but separate, and have been fixed in analyses/10x_multi_5_timepoints_mcginnis/qc/mcginnis_qc.py:
+    * cmo_to_timepoint now correctly parses each tag's timepoint from its
+      name instead of assuming channel1/channel2's CMO1..CMO25 formula.
+    * cmo_clr_normalization no longer hardcodes a /25 divisor in the
+      Seurat-style geometric mean; it now uses the actual panel size
+      (_cmo.shape[1] = 23).
+  These were necessary fixes but don't touch the underlying broken counts.
+
+WHERE INVESTIGATION GOT STUCK
+------------------------------
+- run_kite.py (the actual kallisto/bustools KITE workflow driver invoked by
+  quantify_cmo_tags.py) only exists on the remote Slurm cluster
+  (atomic-workflows/modules/igvf-kite-cmo/run_kite.py, referenced via
+  scripts/python/utils.py's RUN_KITE path) -- not available locally, so its
+  index-build/quantify logic couldn't be inspected directly.
+- No kallisto/bustools run logs (run_info.json, inspect.json) were copied
+  locally alongside the final h5ad -- those would show per-barcode
+  pseudoalignment stats and be the fastest way to confirm whether this is a
+  real sequencing artifact or a pipeline bug.
+- Attempted to stream the raw R2 (CMO tag) FASTQ directly from IGVF to check
+  if the skew is already present in the raw reads, but the download hung on
+  the redirect and was aborted.
+
+HOW TO TROUBLESHOOT NEXT
+--------------------------
+1. Check the Oak/Sherlock run logs
+   (/oak/stanford/groups/engreitz/Projects/EC_Screen/Data/10x_5_timepoints_mcginnis/CMO_counts/cmo/)
+   for run_info.json / inspect.json from the kallisto bus run -- per-barcode
+   alignment rates there would immediately show whether one reference
+   sequence is absorbing nearly all reads.
+2. Re-run quantify_cmo_tags.py from scratch on the cluster (delete the
+   existing output first) in case this was a one-off pipeline failure
+   (partial run, stale index, etc.) rather than a data issue.
+3. Sanity-check the KITE index build -- with 8bp barcodes, `kb ref
+   --workflow kite` needs -k set to the barcode length; if that failed
+   silently, the index could be degenerate. Worth checking the index build
+   command actually used.
+4. If it's a genuine sequencing artifact (e.g. one CMO amplicon massively
+   over-represented from PCR/library prep), the pragmatic path is to skip
+   re-deriving CMO calls from raw counts entirely and use
+   final_anno_igvf0.tsv's sample_multiseq column as the timepoint source of
+   truth for this dataset instead.
+
+UPDATE: CMO counts regenerated (2026-07-24)
+--------------------------------------------
+data/10x_multi_5_timepoints_mcginnis/cmo_counts/adata.h5ad was regenerated
+(mtime 2026-07-24 07:36). The wtc11_endo_d1_5 domination described above is
+gone -- the panel is now mostly healthy.
+
+Validated this systematically: for each of the 23 CMOs, checked whether
+barcodes final_anno_igvf0.tsv assigns to that tag show elevated CLR signal on
+this notebook's own matching CMO column (see mcginnis_qc.py's
+igvf_dataset0_tag_validation_check). Of the 20 tags with any barcodes in
+common between the two datasets, 18 show clean, strong separation (a mean of
+~76-85% of TSV-labeled barcodes clear this notebook's own detection
+threshold for the matching CMO, vs. near-zero for everyone else) --
+confirming the naming correspondence between final_anno_igvf0.tsv's
+sample_multiseq labels and this notebook's own CMO panel is real, not
+coincidental.
+
+Two CMOs remain completely dead in this notebook's own quantification:
+wtc11_endo_d1_3 and wtc11_endo_d3_3. Verified directly: 0 of 17,788 barcodes
+have any nonzero raw count for either, CLR is exactly 0 everywhere, and the
+resulting detection threshold is 0 for both. Yet final_anno_igvf0.tsv DOES
+have real cell assignments for both (623 barcodes for d1_3, 380 for d3_3) --
+so this is specific to our own quantification/reference, not a real absence
+of signal in the underlying sequencing data.
+
+SEPARATE BUG FOUND AND FIXED: wrong FASTQ used as the CMO tag read
+--------------------------------------------------------------------
+Independently of the d1_3/d3_3 investigation, quantify_cmo_tags.py had the
+R2/R3 FASTQ roles swapped. It fed R2 (IGVFFI4642YKWI) into kb count as the
+CMO tag read, but R2 is actually a near-constant handle/capture sequence --
+~98% of its reads are just two near-identical sequences (AGATCTCG /
+TGATCTCG, a likely 1bp-sequencing-error pair) that don't match any of the 23
+barcode sequences at any position, forward or reverse-complement -- a ~1.3%
+real pseudoalignment rate. The real MULTI-seq sample barcode lives in R3
+(IGVFFI5223HYRP), structured as [8bp barcode][polyA] (e.g. GTAGCACT +
+AAAA...AGATACTGGA); 92.16% of R3 reads have a valid 8bp match to the 23-tag
+panel at position 0. This agrees with seqspec IGVFFI6462KGWB, whose kb
+output places the 8bp tag at file index 2 (R3) -- a segment that had been
+misread and hardcoded to R2.
+
+Fixed in commit 614aeb7 on main ("Fix McGinnis CMO quantification: use R3
+(not R2) as the tag read"): fetches [R1, R3] = [IGVFFI5411OJRK,
+IGVFFI5223HYRP] instead of [R1, R2]. READ_FORMAT is unchanged
+(0,0,16:0,16,28:1,0,8) since file1 is now R3. Not yet merged into the
+paper-analysis branch as of this note -- pull it in before re-running
+quantify_cmo_tags.py from a checkout of this branch.
+
+IMPORTANT: the adata.h5ad regenerated on 2026-07-24 (mtime 07:36) and
+analyzed throughout this file was ALREADY quantified from the correct R3
+file -- the R2/R3 bug above is real and worth fixing/merging, but it is NOT
+the explanation for what follows below. d1_3/d3_3 being dead, and the
+d1_5/d2_3/d4_2 absence, are both confirmed present in the CORRECT-file
+counts, not artifacts of the old R2-based run.
+
+CONFIRMED against the raw R3 FASTQ directly (5M-read stream, no kb-python
+involved), to separate "what's really in the sequencing data" from "what
+kb-python's quantification produced":
+  - 20 of 23 barcodes are clear, strong winners (103K-603K reads each out of
+    5M) at the expected position 0, including wtc11_endo_d1_3 (267,350
+    reads) and wtc11_endo_d3_3 (180,139 reads) -- both have plenty of real
+    signal in the raw reads.
+  - wtc11_endo_d1_4 is genuinely the single most abundant real barcode in
+    the pool (603,235 reads, 12.05% -- rank #1 of 23). Its elevated
+    representation in the final counts reflects real over-loading of that
+    well, not a quantification artifact.
+  - wtc11_endo_d1_5, wtc11_endo_d2_3, and wtc11_endo_d4_2 have exactly ZERO
+    occurrences in the same 5M-read sample -- not low background, a genuine
+    complete absence at the raw sequencing level. This matches
+    final_anno_igvf0.tsv exactly (same 3 tags entirely absent from its
+    sample_multiseq column too), so those 3 wells simply have no data in
+    this experiment (failed reagent/no cells loaded) -- resolved, not a bug
+    on either side.
+
+RESOLVED (2026-07-24): wtc11_endo_d1_3 and wtc11_endo_d3_3 were zero in the
+quantified adata.h5ad despite clear, strong signal in the raw R3 reads
+(267,350 and 180,139 reads respectively) -- something during the KITE
+index-build/quantify step was eating both of them, specifically.
+
+Root cause: d1_3's barcode (CGAGATTC) is the EXACT reverse
+complement of d3_3's barcode (GAATCTCG) -- the only such pair among the 23
+(every other pair has minimum Hamming distance 4, forward or
+reverse-complement). `kb ref --workflow kite` generates every single-
+mismatch variant of each barcode as part of its index (confirmed directly in
+transcripts.txt -- 24 variants + 1 original per tag = 25 entries). If kite's
+index construction also accounts for reverse-complement orientation (common
+in feature-barcoding tools, to handle strand ambiguity), d1_3's index entry
+would include GAATCTCG (its revcomp) as belonging to d1_3 -- but GAATCTCG is
+also d3_3's own literal forward barcode. That would make GAATCTCG (and
+symmetrically CGAGATTC) map ambiguously to both genes in the t2g file.
+kallisto/bustools' standard behavior for reads landing in an ambiguous
+multi-gene equivalence class is to exclude them from the final per-gene
+count matrix -- which would zero out BOTH tags entirely while leaving all 21
+non-colliding barcodes untouched. This fits every piece of evidence: real
+signal in the raw reads, zero in the final counts, only this one pair
+affected, nothing else disturbed.
+
+CONFIRMED by re-running the CMO quantification with this fixed: d1_3 and
+d3_3 now show real, substantial counts in the regenerated adata.h5ad --
+
+    CMO                  mean    median   % nonzero
+    wtc11_endo_d1_3      103.3   20       100%
+    wtc11_endo_d3_3       63.3   20       100%
+    wtc11_endo_d1_4      207.9   53       100%   (for reference, the most
+                                                   abundant real tag)
+    wtc11_endo_d1_5, d2_3, d4_2: means 0.15-0.65, nonzero in a minority of
+      cells -- ~150-300x lower than real tags, consistent with background/
+      ambient noise rather than genuine cells, matching the confirmed
+      complete absence of these 3 tags in the raw R3 FASTQ.
+
+STATUS: fully resolved. R2/R3 file-swap bug found and fixed upstream
+(614aeb7 on main, not yet in paper-analysis; unrelated to d1_3/d3_3).
+d1_5/d2_3/d4_2 absence confirmed as a real data gap on both sides, not a
+bug. d1_3/d3_3 reverse-complement t2g collision identified and fixed;
+counts recovered on re-quantification. No open questions remain on the CMO
+tag identity/assignment side.
