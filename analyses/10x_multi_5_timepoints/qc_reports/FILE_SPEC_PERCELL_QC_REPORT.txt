@@ -1,0 +1,21 @@
+Per-cell quality control report -- file format specification
+WTC11-EC 10x Multiome, 5 timepoints (Engreitz Lab)
+
+One row per cell barcode contributing to the pseudobulk (tab-separated, gzip-compressed).
+RNA metrics are taken from the filtered RNA count matrix's own per-cell metadata (scanpy
+`.obs`); ATAC metrics are computed from the corresponding filtered ATAC fragment file using
+ArchR (fragment count, TSS enrichment) and directly from fragment length (nucleosome signal).
+
+Columns:
+  barcode                       16bp 10x cell barcode, suffixed with the originating
+                                 multiplexed-sample accession (e.g. AAACAGCC..._IGVFSMxxxxxxxx)
+  atac_fragment_count           Number of ATAC fragments for this cell (ArchR nFrags)
+  atac_tss_enrichment           ATAC TSS enrichment score for this cell (ArchR TSSEnrichment)
+  atac_nucleosome_signal        Ratio of mono-nucleosomal (147-294bp) to nucleosome-free
+                                 (<147bp) ATAC fragments for this cell
+  rna_umi_count                 Total RNA UMI count for this cell
+  rna_gene_count                Number of genes detected (>0 counts) for this cell
+  rna_pct_mito                  Percentage of RNA UMIs from mitochondrial genes
+  rna_scrublet_doublet_score    Scrublet-computed doublet score for this cell
+  pass_strict_qc                Boolean; whether this cell passed the lab's strict per-cell
+                                 QC filter (used to define pseudobulk cluster membership)
